@@ -6822,6 +6822,83 @@ You must design a visual composition that tells the story through **8 distinct p
                     }
 
                     if (type === 'video') {
+                        // ★ RunningHub 视频工作流（需要在其他视频 API 之前检查）
+                        const isRunningHubVideo = modelId === 'runninghub-video' || config?.isRunningHub === true;
+                        if (isRunningHubVideo) {
+                            // 获取节点设置中的 Workflow ID（优先使用节点独立的设置）
+                            const nodeWorkflowId = node?.settings?.runninghubWorkflowId;
+                            const effectiveWorkflowId = nodeWorkflowId || runninghubWorkflowId;
+
+                            // 检查是否配置了 RunningHub
+                            if (!runninghubApiKey) {
+                                throw new Error('请先在设置中配置 RunningHub API Key');
+                            }
+                            if (!effectiveWorkflowId) {
+                                if (nodeWorkflowId === undefined && !runninghubWorkflowId) {
+                                    throw new Error('请在设置中配置 RunningHub Workflow ID');
+                                } else {
+                                    throw new Error('请在该节点设置中配置 RunningHub Workflow ID');
+                                }
+                            }
+
+                            // 准备节点参数列表
+                            const nodeInfoList = [];
+
+                            // 如果有参考图，先上传到 RunningHub
+                            const allImages = [...connectedImages];
+                            if (sourceImage && !allImages.includes(sourceImage)) {
+                                allImages.push(sourceImage);
+                            }
+
+                            // 上传所有图片并构建 nodeInfoList
+                            const uploadedFiles = [];
+                            for (let i = 0; i < allImages.length; i++) {
+                                try {
+                                    const fileName = await uploadToRunningHub(allImages[i]);
+                                    uploadedFiles.push({
+                                        index: i,
+                                        fileName: fileName,
+                                        originalUrl: allImages[i]
+                                    });
+                                    console.log(`[RunningHub Video] 图片 ${i + 1} 上传成功:`, fileName);
+                                } catch (uploadErr) {
+                                    console.error(`[RunningHub Video] 图片 ${i + 1} 上传失败:`, uploadErr);
+                                    throw new Error(`图片上传失败: ${uploadErr.message}`);
+                                }
+                            }
+
+                            // 构建 nodeInfoList
+                            uploadedFiles.forEach((file, idx) => {
+                                nodeInfoList.push({
+                                    nodeId: String(10 + idx),
+                                    fieldName: 'image',
+                                    fieldValue: file.fileName
+                                });
+                            });
+
+                            // 如果有 prompt，添加到节点参数中
+                            if (prompt) {
+                                nodeInfoList.push({
+                                    nodeId: '11',
+                                    fieldName: 'prompt',
+                                    fieldValue: prompt
+                                });
+                            }
+
+                            // 添加其他参数（ratio, resolution 等）
+                            if (ratio && ratio !== 'Auto') {
+                                nodeInfoList.push({
+                                    nodeId: '12',
+                                    fieldName: 'ratio',
+                                    fieldValue: ratio
+                                });
+                            }
+
+                            // 启动工作流（强制标记为视频工作流）
+                            await runRunningHubWorkflow(effectiveWorkflowId, nodeInfoList, taskId, actualSourceNodeId, w, h, true);
+                            return; // ★ RunningHub 启动完成，等待轮询结果
+                        }
+
                         // Veo 3.x 图生视频：按 /v2/videos/generations 规范发送 JSON，使用 images 数组而不是 input_image
                         if (modelId.includes('veo')) {
                             const endpoint = `${baseUrl}/v2/videos/generations`;
