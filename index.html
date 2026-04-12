@@ -4551,8 +4551,12 @@ You must design a visual composition that tells the story through **8 distinct p
                     console.log('[Tapnow] RunningHub v2 Upload:', data);
 
                     // v2 API 返回格式：{ code: 0, message: 'success', data: { fileName: 'openapi/xxx.png', download_url: '...' } }
-                    if (data.code === 0 && data.data?.fileName) {
-                        return data.data.fileName; // 返回 openapi/xxx.png 格式
+                    if (data.code === 0 && data.data) {
+                        // 返回完整对象，包含 fileName 和 download_url（v2 需要完整 URL）
+                        return {
+                            fileName: data.data.fileName,
+                            url: data.data.download_url || data.data.url || `https://www.runninghub.cn/${data.data.fileName}`
+                        };
                     } else {
                         throw new Error(data.msg || data.message || '上传失败');
                     }
@@ -5851,26 +5855,28 @@ You must design a visual composition that tells the story through **8 distinct p
                             const uploadedFiles = [];
                             for (let i = 0; i < allImages.length; i++) {
                                 try {
-                                    const fileName = await uploadToRunningHub(allImages[i]);
+                                    // v2 API 返回 { fileName, url }
+                                    const uploadResult = await uploadToRunningHub(allImages[i]);
                                     uploadedFiles.push({
                                         index: i,
-                                        fileName: fileName,
+                                        fileName: uploadResult.fileName,
+                                        url: uploadResult.url,
                                         originalUrl: allImages[i]
                                     });
-                                    console.log(`[RunningHub] 图片 ${i + 1} 上传成功:`, fileName);
+                                    console.log(`[RunningHub v2] 图片 ${i + 1} 上传成功:`, uploadResult);
                                 } catch (uploadErr) {
-                                    console.error(`[RunningHub] 图片 ${i + 1} 上传失败:`, uploadErr);
+                                    console.error(`[RunningHub v2] 图片 ${i + 1} 上传失败:`, uploadErr);
                                     throw new Error(`图片上传失败: ${uploadErr.message}`);
                                 }
                             }
 
                             // 构建 nodeInfoList
-                            // 这里假设第一个上传的图片对应 nodeId "10"（你需要根据实际工作流调整）
+                            // v2 API 需要完整 URL 而不是文件名
                             uploadedFiles.forEach((file, idx) => {
                                 nodeInfoList.push({
-                                    nodeId: String(10 + idx), // 默认从节点10开始
+                                    nodeId: String(10 + idx),
                                     fieldName: 'image',
-                                    fieldValue: file.fileName  // 旧版使用 fieldValue
+                                    fieldValue: file.url  // v2 需要完整 URL
                                 });
                             });
 
@@ -6850,25 +6856,28 @@ You must design a visual composition that tells the story through **8 distinct p
                             const uploadedFiles = [];
                             for (let i = 0; i < allImages.length; i++) {
                                 try {
-                                    const fileName = await uploadToRunningHub(allImages[i]);
+                                    // v2 API 返回 { fileName, url }
+                                    const uploadResult = await uploadToRunningHub(allImages[i]);
                                     uploadedFiles.push({
                                         index: i,
-                                        fileName: fileName,
+                                        fileName: uploadResult.fileName,
+                                        url: uploadResult.url,
                                         originalUrl: allImages[i]
                                     });
-                                    console.log(`[RunningHub Video] 图片 ${i + 1} 上传成功:`, fileName);
+                                    console.log(`[RunningHub v2 Video] 图片 ${i + 1} 上传成功:`, uploadResult);
                                 } catch (uploadErr) {
-                                    console.error(`[RunningHub Video] 图片 ${i + 1} 上传失败:`, uploadErr);
+                                    console.error(`[RunningHub v2 Video] 图片 ${i + 1} 上传失败:`, uploadErr);
                                     throw new Error(`图片上传失败: ${uploadErr.message}`);
                                 }
                             }
 
                             // 构建 nodeInfoList
+                            // v2 API 需要完整 URL 而不是文件名
                             uploadedFiles.forEach((file, idx) => {
                                 nodeInfoList.push({
                                     nodeId: String(10 + idx),
                                     fieldName: 'image',
-                                    fieldValue: file.fileName  // 旧版使用 fieldValue
+                                    fieldValue: file.url  // v2 需要完整 URL
                                 });
                             });
 
