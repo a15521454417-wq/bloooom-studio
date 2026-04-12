@@ -4603,6 +4603,7 @@ You must design a visual composition that tells the story through **8 distinct p
                     }
 
                     const data = await resp.json();
+                    console.log('[Tapnow] RunningHub v2 Run Workflow URL:', url);
                     console.log('[Tapnow] RunningHub v2 Run Workflow Request:', JSON.stringify(payload, null, 2));
                     console.log('[Tapnow] RunningHub v2 Run Workflow Response:', JSON.stringify(data, null, 2));
 
@@ -5974,6 +5975,12 @@ You must design a visual composition that tells the story through **8 distinct p
                             if (isAIApp) {
                                 // ===== AI App 模式（固定节点ID）=====
                                 // 根据文档：nodeId 2, 9, 10 是图片节点
+                                console.log(`[AI App] 使用的 Workflow ID: ${effectiveWorkflowId}`);
+                                console.log(`[AI App] 上传的文件:`, uploadedFiles.map(f => ({
+                                    pureFileName: f.pureFileName,
+                                    fullUrl: f.url
+                                })));
+                                
                                 const aiAppImageNodes = [
                                     { nodeId: '2', fieldName: 'image' },
                                     { nodeId: '9', fieldName: 'image' },
