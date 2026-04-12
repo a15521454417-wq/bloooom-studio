@@ -2813,6 +2813,13 @@ You must design a visual composition that tells the story through **8 distinct p
                     return;
                 }
 
+                // RunningHub 工作流模型没有 /v1/models 端点，跳过连通性测试
+                if (config?.isRunningHub) {
+                    setApiStatus((prev) => ({ ...prev, [id]: 'success' }));
+                    setApiTesting(null);
+                    return;
+                }
+
                 try {
                     const response = await fetch(`${config?.url || DEFAULT_BASE_URL}/v1/models`, {
                         method: 'GET',
@@ -5553,7 +5560,7 @@ You must design a visual composition that tells the story through **8 distinct p
                     }).replace(/\s{2,}/g, ' ').trim(); // 清理多余空格
                 };
                 // 优先使用 options 中的 model，其次使用节点设置，最后使用默认值
-                const modelId = options.model || node?.settings?.model || (type === 'image' ? 'nano-banana' : 'sora-2');
+                const modelId = options.model || node?.settings?.model || (type === 'image' ? 'nano-banana' : 'runninghub-video');
                 const config = apiConfigsMap.get(modelId);
                 const apiKey = config?.key || globalApiKey;
                 const baseUrl = (config?.url || DEFAULT_BASE_URL).replace(/\/+$/, '');
