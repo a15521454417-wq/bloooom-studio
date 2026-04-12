@@ -4373,7 +4373,7 @@ You must design a visual composition that tells the story through **8 distinct p
                 });
             };
 
-            // ===== RunningHub 工作流轮询函数 =====
+            // ===== RunningHub 工作流轮询函数（v2 API）=====
             const pollRunningHubJob = async (taskId, workflowId, nodeInfoList, sourceNodeId, w, h, attempt = 0, isVideoWorkflow = false) => {
                 const maxAttempts = 180; // 最多轮询180次（约15分钟，假设每次5秒）
                 const delayMs = 5000;
@@ -4387,15 +4387,15 @@ You must design a visual composition that tells the story through **8 distinct p
                     return;
                 }
 
-                // RunningHub 旧版查询接口：POST /task/openapi/outputs
+                // RunningHub v2 API 查询接口：POST /openapi/v2/query
                 try {
-                    const resp = await fetch(`${RUNNINGHUB_BASE_URL}/task/openapi/outputs`, {
+                    const resp = await fetch(`${RUNNINGHUB_BASE_URL}/openapi/v2/query`, {
                         method: 'POST',
                         headers: {
-                            'Host': 'www.runninghub.cn',
-                            'Content-Type': 'application/json'
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${runninghubApiKey}`
                         },
-                        body: JSON.stringify({ apiKey: runninghubApiKey, taskId })
+                        body: JSON.stringify({ taskId })
                     });
 
                     if (!resp.ok) {
@@ -4403,20 +4403,22 @@ You must design a visual composition that tells the story through **8 distinct p
                     }
 
                     const data = await resp.json();
-                    console.log('[Tapnow] RunningHub Poll:', data);
+                    console.log('[Tapnow] RunningHub v2 Poll:', JSON.stringify(data, null, 2));
 
-                    // 旧版返回格式：{ code: 0, msg: 'success', data: [{ fileUrl: '...', fileType: '...', ... }] }
-                    const code = data.code;
-                    const resultList = data.data || [];
+                    // v2 API 返回格式：{ taskId, status, results: [{ url, nodeId, outputType }], errorCode, errorMessage }
+                    const status = data.status;
+                    const results = data.results || [];
 
-                    // 成功状态 (code: 0)
-                    if (code === 0 && resultList.length > 0) {
-                        // 从 data 数组中提取第一个有效 URL
+                    // 成功状态
+                    if (status === 'SUCCESS') {
+                        // 从 results 数组中提取第一个有效 URL
                         let outputUrl = '';
+                        let outputType = '';
 
-                        for (const result of resultList) {
-                            if (result.fileUrl && (result.fileUrl.startsWith('http') || result.fileUrl.startsWith('data:'))) {
-                                outputUrl = result.fileUrl;
+                        for (const result of results) {
+                            if (result.url && (result.url.startsWith('http') || result.url.startsWith('data:'))) {
+                                outputUrl = result.url;
+                                outputType = result.outputType || '';
                                 break;
                             }
                         }
@@ -4428,10 +4430,11 @@ You must design a visual composition that tells the story through **8 distinct p
                             const startTime = historyItem?.startTime || endTime;
                             const durationMs = endTime - startTime;
 
-                            // 判断输出类型：视频工作流强制标记，或通过 URL 识别
+                            // 判断输出类型：视频工作流强制标记，或通过 URL/outputType 识别
                             const isVideo = isVideoWorkflow ||
                                           outputUrl.includes('.mp4') || outputUrl.includes('.webm') ||
-                                          outputUrl.includes('.mov') || outputUrl.includes('video');
+                                          outputUrl.includes('.mov') || outputUrl.includes('video') ||
+                                          outputType === 'mp4' || outputType === 'webm';
 
                             setHistory((prev) => {
                                 const updated = prev.map((hItem) =>
@@ -4460,7 +4463,7 @@ You must design a visual composition that tells the story through **8 distinct p
                                 return updated;
                             });
                         } else {
-                            console.warn('[Tapnow] RunningHub: 任务成功但未找到输出URL', resultList);
+                            console.warn('[Tapnow] RunningHub v2: 任务成功但未找到输出URL', results);
                             setHistory((prev) => prev.map((hItem) =>
                                 hItem.id === taskId
                                     ? { ...hItem, status: 'completed', progress: 100, errorMsg: '任务完成但未返回输出URL' }
@@ -4470,10 +4473,9 @@ You must design a visual composition that tells the story through **8 distinct p
                         return;
                     }
 
-                    // 失败状态 (code: 805)
-                    if (code === 805) {
-                        const failedInfo = resultList[0] || {};
-                        const errorMsg = failedInfo.failedReason?.exception_message || failedInfo.exception_message || data.msg || '任务失败';
+                    // 失败状态
+                    if (status === 'FAILED') {
+                        const errorMsg = data.errorMessage || data.failedReason?.exception_message || '任务失败';
                         setHistory((prev) => prev.map((hItem) =>
                             hItem.id === taskId
                                 ? { ...hItem, status: 'failed', errorMsg }
@@ -4482,9 +4484,9 @@ You must design a visual composition that tells the story through **8 distinct p
                         return;
                     }
 
-                    // 进行中状态 (code: 804 运行中, 813 排队中) - 继续轮询
+                    // 进行中状态 (RUNNING, QUEUED) - 继续轮询
                     const progress = Math.min(95, 10 + (attempt * 0.5));
-                    const statusText = code === 813 ? '排队中' : '运行中';
+                    const statusText = status === 'QUEUED' ? '排队中' : '运行中';
                     setHistory((prev) => prev.map((hItem) =>
                         hItem.id === taskId
                             ? { ...hItem, status: 'generating', progress, errorMsg: statusText }
@@ -4493,7 +4495,7 @@ You must design a visual composition that tells the story through **8 distinct p
 
                     setTimeout(() => pollRunningHubJob(taskId, workflowId, nodeInfoList, sourceNodeId, w, h, attempt + 1, isVideoWorkflow), delayMs);
                 } catch (err) {
-                    console.error('[Tapnow] RunningHub Poll Error:', err);
+                    console.error('[Tapnow] RunningHub v2 Poll Error:', err);
                     // 网络错误，继续重试
                     if (attempt < maxAttempts - 5) {
                         setTimeout(() => pollRunningHubJob(taskId, workflowId, nodeInfoList, sourceNodeId, w, h, attempt + 1, isVideoWorkflow), delayMs);
@@ -4507,7 +4509,7 @@ You must design a visual composition that tells the story through **8 distinct p
                 }
             };
 
-            // ===== RunningHub 文件上传函数 =====
+            // ===== RunningHub 文件上传函数（v2 API）=====
             const uploadToRunningHub = async (imageData) => {
                 try {
                     let blob;
@@ -4523,6 +4525,8 @@ You must design a visual composition that tells the story through **8 distinct p
                         throw new Error('不支持的图片数据格式');
                     }
 
+                    // RunningHub v2 API 上传接口：POST /openapi/v2/media/upload/binary
+                    // 需要直接传文件二进制，用 FormData 格式
                     const formData = new FormData();
                     // 根据blob类型生成文件名
                     const mimeType = blob.type || 'image/png';
@@ -4530,11 +4534,11 @@ You must design a visual composition that tells the story through **8 distinct p
                     const fileName = `upload_${Date.now()}.${extension}`;
                     formData.append('file', blob, fileName);
 
-                    // RunningHub 旧版上传接口（已验证可用）
-                    const resp = await fetch(`${RUNNINGHUB_BASE_URL}/task/openapi/upload`, {
+                    const resp = await fetch(`${RUNNINGHUB_BASE_URL}/openapi/v2/media/upload/binary`, {
                         method: 'POST',
                         headers: {
-                            'Host': 'www.runninghub.cn'
+                            'Authorization': `Bearer ${runninghubApiKey}`
+                            // 注意：不设置 Content-Type，让浏览器自动设置 multipart/form-data
                         },
                         body: formData
                     });
@@ -4544,69 +4548,70 @@ You must design a visual composition that tells the story through **8 distinct p
                     }
 
                     const data = await resp.json();
-                    console.log('[Tapnow] RunningHub Upload:', data);
+                    console.log('[Tapnow] RunningHub v2 Upload:', data);
 
-                    // 旧版返回格式：{ code: 0, msg: 'success', data: { fileName: 'api/xxx.jpg', ... } }
+                    // v2 API 返回格式：{ code: 0, message: 'success', data: { fileName: 'openapi/xxx.png', download_url: '...' } }
                     if (data.code === 0 && data.data?.fileName) {
-                        return data.data.fileName; // 返回 api/xxx.jpg 格式
+                        return data.data.fileName; // 返回 openapi/xxx.png 格式
                     } else {
                         throw new Error(data.msg || data.message || '上传失败');
                     }
                 } catch (err) {
-                    console.error('[Tapnow] RunningHub Upload Error:', err);
+                    console.error('[Tapnow] RunningHub v2 Upload Error:', err);
                     throw err;
                 }
             };
 
-            // ===== RunningHub 启动工作流函数 =====
+            // ===== RunningHub 启动工作流函数（v2 API）=====
             const runRunningHubWorkflow = async (workflowId, nodeInfoList, taskId, sourceNodeId, w, h, isVideoWorkflow = false) => {
                 try {
-                    // RunningHub 旧版提交任务接口（已验证可用）
-                    // 接口：POST /task/openapi/create
-                    // Body 包含 apiKey（旧版不用 Header 认证）
+                    // RunningHub v2 API 官方文档：https://www.runninghub.cn/openapi/v2/run/workflow/{workflowId}
+                    const url = `${RUNNINGHUB_BASE_URL}/openapi/v2/run/workflow/${workflowId}`;
                     const payload = {
-                        apiKey: runninghubApiKey,
-                        workflowId: workflowId,
-                        nodeInfoList: nodeInfoList
+                        addMetadata: true,
+                        nodeInfoList: nodeInfoList,
+                        instanceType: 'default',
+                        usePersonalQueue: false
                     };
 
-                    const resp = await fetch(`${RUNNINGHUB_BASE_URL}/task/openapi/create`, {
+                    const resp = await fetch(url, {
                         method: 'POST',
                         headers: {
-                            'Host': 'www.runninghub.cn',
-                            'Content-Type': 'application/json'
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${runninghubApiKey}`
                         },
                         body: JSON.stringify(payload)
                     });
 
                     if (!resp.ok) {
                         const errText = await resp.text();
-                        console.error('[Tapnow] RunningHub Run Workflow HTTP Error:', resp.status, errText);
+                        console.error('[Tapnow] RunningHub v2 Run Workflow HTTP Error:', resp.status, errText);
                         throw new Error(`启动工作流失败: HTTP ${resp.status}`);
                     }
 
                     const data = await resp.json();
-                    console.log('[Tapnow] RunningHub Run Workflow Request:', JSON.stringify(payload, null, 2));
-                    console.log('[Tapnow] RunningHub Run Workflow Response:', JSON.stringify(data, null, 2));
+                    console.log('[Tapnow] RunningHub v2 Run Workflow Request:', JSON.stringify(payload, null, 2));
+                    console.log('[Tapnow] RunningHub v2 Run Workflow Response:', JSON.stringify(data, null, 2));
 
-                    // 旧版返回格式：{ code: 0, msg: 'success', data: { taskId: '...', ... } }
-                    if (data.code === 0 && data.data?.taskId) {
-                        const remoteTaskId = data.data.taskId;
+                    // v2 API 返回格式：{ taskId, status, errorCode, errorMessage, results, ... }
+                    if (data.taskId) {
+                        const remoteTaskId = data.taskId;
+                        const initialStatus = data.status; // QUEUED, RUNNING
                         // 更新历史记录中的远程任务ID
                         setHistory((prev) => prev.map((hItem) =>
                             hItem.id === taskId
-                                ? { ...hItem, remoteTaskId }
+                                ? { ...hItem, remoteTaskId, errorMsg: initialStatus === 'QUEUED' ? '排队中' : '运行中' }
                                 : hItem
                         ));
                         // 开始轮询，传入视频标记
                         pollRunningHubJob(remoteTaskId, workflowId, nodeInfoList, sourceNodeId, w, h, 0, isVideoWorkflow);
                     } else {
                         // 打印完整的响应以便调试
-                        console.error('[Tapnow] RunningHub Error Response:', JSON.stringify(data, null, 2));
-                        throw new Error(data.errorMessage || data.message || data.msg || '启动工作流失败');
+                        console.error('[Tapnow] RunningHub v2 Error Response:', JSON.stringify(data, null, 2));
+                        throw new Error(data.errorMessage || data.message || data.errorCode || '启动工作流失败');
                     }
                 } catch (err) {
-                    console.error('[Tapnow] RunningHub Run Workflow Error:', err);
+                    console.error('[Tapnow] RunningHub v2 Run Workflow Error:', err);
                     setHistory((prev) => prev.map((hItem) =>
                         hItem.id === taskId
                             ? { ...hItem, status: 'failed', errorMsg: err.message || 'RunningHub 工作流启动失败' }
