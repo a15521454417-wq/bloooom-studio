@@ -7210,53 +7210,51 @@ You must design a visual composition that tells the story through **8 distinct p
                                 // 优先使用视频节点（如果有），否则使用图片节点
                                 const mediaNodes = videoNodes.length > 0 ? videoNodes : imageNodes;
 
-                                if (mediaNodes.length > 0) {
-                                    // 使用工作流定义的节点
-                                    uploadedFiles.forEach((file, idx) => {
-                                        const targetNode = mediaNodes[idx % mediaNodes.length];
-                                        if (targetNode) {
-                                            nodeInfoList.push({
-                                                nodeId: targetNode.nodeId,
-                                                fieldName: targetNode.fieldName || 'image',
-                                                fieldValue: file.fileName
-                                            });
-                                            console.log(`[RunningHub Video] 图片${idx + 1} → 节点 ${targetNode.nodeId} (${targetNode.classType})`);
-                                        }
-                                    });
-                                } else {
-                                    // 使用默认节点ID
-                                    const defaultNodeIds = ['10', '11', '12', '13', '14'];
-                                    uploadedFiles.forEach((file, idx) => {
-                                        const nodeId = defaultNodeIds[idx] || String(10 + idx);
+                            if (mediaNodes.length > 0) {
+                                // 使用工作流定义的节点
+                                uploadedFiles.forEach((file, idx) => {
+                                    const targetNode = mediaNodes[idx % mediaNodes.length];
+                                    if (targetNode) {
                                         nodeInfoList.push({
-                                            nodeId,
-                                            fieldName: 'image',
+                                            nodeId: targetNode.nodeId,
+                                            fieldName: targetNode.fieldName || 'image',
                                             fieldValue: file.fileName
                                         });
-                                        console.log(`[RunningHub Video] 图片${idx + 1} → 默认节点 ${nodeId}`);
-                                    });
-                                }
+                                        console.log(`[RunningHub Video] 图片${idx + 1} → 节点 ${targetNode.nodeId} (${targetNode.classType})`);
+                                    }
+                                });
+                            } else {
+                                // ⚠️ 未发现有效的图片/视频输入节点，跳过图片上传
+                                console.warn(`[RunningHub Video] ⚠️ 工作流中未发现图片/视频输入节点（LoadImage/LoadVideo），已跳过 ${uploadedFiles.length} 张图片`);
+                                console.warn(`[RunningHub Video] 如需传入图片，请确认工作流包含 LoadImage 或 LoadVideo 类型节点`);
+                            }
 
-                                // 如果有 prompt，添加到文本节点
-                                if (prompt) {
-                                    if (textNodes.length > 0) {
-                                        textNodes.slice(0, 1).forEach(textNode => {
-                                            nodeInfoList.push({
-                                                nodeId: textNode.nodeId,
-                                                fieldName: textNode.fieldName || 'text',
-                                                fieldValue: prompt
-                                            });
-                                            console.log(`[RunningHub Video] Prompt → 节点 ${textNode.nodeId}`);
-                                        });
-                                    } else {
+                            // 如果有 prompt，添加到文本节点
+                            if (prompt) {
+                                if (textNodes.length > 0) {
+                                    textNodes.slice(0, 1).forEach(textNode => {
                                         nodeInfoList.push({
-                                            nodeId: '3',
-                                            fieldName: 'text',
+                                            nodeId: textNode.nodeId,
+                                            fieldName: textNode.fieldName || 'text',
                                             fieldValue: prompt
                                         });
-                                        console.log(`[RunningHub Video] Prompt → 默认节点 3`);
+                                        console.log(`[RunningHub Video] Prompt → 节点 ${textNode.nodeId}`);
+                                    });
+                                } else {
+                                    // 未发现文本节点，尝试用通用参数节点（如果有）
+                                    const paramNodes = nodeMapping.paramNodes || [];
+                                    if (paramNodes.length > 0) {
+                                        nodeInfoList.push({
+                                            nodeId: paramNodes[0].nodeId,
+                                            fieldName: paramNodes[0].fieldName || 'prompt',
+                                            fieldValue: prompt
+                                        });
+                                        console.log(`[RunningHub Video] Prompt → 参数节点 ${paramNodes[0].nodeId}`);
+                                    } else {
+                                        console.warn(`[RunningHub Video] ⚠️ 工作流中未发现文本/参数输入节点，Prompt 将不传入`);
                                     }
                                 }
+                            }
                             }
 
                             // ★ 启动工作流（强制标记为视频工作流）
