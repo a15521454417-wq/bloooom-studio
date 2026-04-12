@@ -4569,9 +4569,9 @@ You must design a visual composition that tells the story through **8 distinct p
             // ===== RunningHub 启动工作流函数（v2 API）=====
             const runRunningHubWorkflow = async (workflowId, nodeInfoList, taskId, sourceNodeId, w, h, isVideoWorkflow = false) => {
                 try {
-                    // RunningHub v2 API 官方文档：https://www.runninghub.cn/openapi/v2/run/ai-app/{id}
-                    // 注意：AI 应用用 /ai-app/{id}，ComfyUI 工作流用 /workflow/{id}
-                    const url = `${RUNNINGHUB_BASE_URL}/openapi/v2/run/ai-app/${workflowId}`;
+                    // RunningHub v2 API ComfyUI 工作流：/openapi/v2/run/workflow/{workflowId}
+                    // 注意：ComfyUI 工作流用 /workflow/{id}，AI App 用 /ai-app/{id}
+                    const url = `${RUNNINGHUB_BASE_URL}/openapi/v2/run/workflow/${workflowId}`;
                     const payload = {
                         addMetadata: true,
                         nodeInfoList: nodeInfoList,
@@ -4653,6 +4653,94 @@ You must design a visual composition that tells the story through **8 distinct p
                     console.error('[Tapnow] RunningHub Workflow JSON Error:', err);
                     throw err;
                 }
+            };
+
+            // ===== 自动发现工作流节点映射 =====
+            // 分析工作流 JSON，找到图片/视频/文本输入节点
+            const discoverWorkflowNodes = (workflowJson) => {
+                const imageNodes = [];   // 图片输入节点
+                const videoNodes = [];   // 视频输入节点
+                const textNodes = [];    // 文本输入节点
+                const paramNodes = [];   // 其他参数节点
+
+                // ComfyUI 常见的输入节点类型
+                const IMAGE_NODE_TYPES = ['LoadImage', 'LoadImageBHB', 'LoadImagesFromFolder'];
+                const VIDEO_NODE_TYPES = ['LoadVideo', 'LoadVideoPath', 'LoadVideoNode'];
+                const TEXT_NODE_TYPES = ['CLIPTextEncode', 'TextEncode'];
+                const PARAM_NODE_TYPES = ['EmptyLatentImage', 'ControlNetLoader', 'KSampler'];
+
+                if (!workflowJson || typeof workflowJson !== 'object') {
+                    console.warn('[Tapnow] 工作流JSON格式无效');
+                    return { imageNodes, videoNodes, textNodes, paramNodes };
+                }
+
+                // 遍历工作流节点
+                for (const [nodeId, nodeConfig] of Object.entries(workflowJson)) {
+                    if (!nodeConfig || !nodeConfig.class_type) continue;
+
+                    const classType = nodeConfig.class_type;
+                    const inputs = nodeConfig.inputs || {};
+
+                    // 检查是否是图片输入节点
+                    if (IMAGE_NODE_TYPES.includes(classType)) {
+                        // LoadImage 节点的 image 字段就是图片
+                        if ('image' in inputs) {
+                            imageNodes.push({
+                                nodeId,
+                                fieldName: 'image',
+                                classType
+                            });
+                        }
+                    }
+
+                    // 检查是否是视频输入节点
+                    if (VIDEO_NODE_TYPES.includes(classType)) {
+                        // 视频节点通常有 video 或 video_path 字段
+                        const videoField = inputs.video ? 'video' : inputs.video_path ? 'video_path' : null;
+                        if (videoField) {
+                            videoNodes.push({
+                                nodeId,
+                                fieldName: videoField,
+                                classType
+                            });
+                        }
+                    }
+
+                    // 检查是否是文本输入节点
+                    if (TEXT_NODE_TYPES.includes(classType)) {
+                        // CLIPTextEncode 节点的 text 字段就是提示词
+                        if ('text' in inputs) {
+                            textNodes.push({
+                                nodeId,
+                                fieldName: 'text',
+                                classType
+                            });
+                        }
+                    }
+
+                    // 检查是否有其他可调参数（resolution, seed, steps 等）
+                    const paramFields = ['resolution', 'width', 'height', 'seed', 'steps', 'cfg', 'denoise', 'sampler_name'];
+                    for (const field of paramFields) {
+                        if (field in inputs) {
+                            paramNodes.push({
+                                nodeId,
+                                fieldName: field,
+                                classType,
+                                currentValue: inputs[field]
+                            });
+                            break; // 只记录一次
+                        }
+                    }
+                }
+
+                console.log('[Tapnow] 发现的工作流节点:', {
+                    images: imageNodes,
+                    videos: videoNodes,
+                    texts: textNodes,
+                    params: paramNodes.slice(0, 5) // 只显示前5个
+                });
+
+                return { imageNodes, videoNodes, textNodes, paramNodes };
             };
 
             // 切割Midjourney返回的4张图（2x2网格）
@@ -5843,6 +5931,18 @@ You must design a visual composition that tells the story through **8 distinct p
                                 }
                             }
 
+                            // ★ 自动发现工作流节点
+                            console.log(`[RunningHub] 开始获取工作流定义: ${effectiveWorkflowId}`);
+                            let workflowJson;
+                            let nodeMapping = { imageNodes: [], textNodes: [], paramNodes: [] };
+                            try {
+                                workflowJson = await getRunningHubWorkflowJson(effectiveWorkflowId);
+                                nodeMapping = discoverWorkflowNodes(workflowJson);
+                                console.log(`[RunningHub] 工作流节点映射:`, nodeMapping);
+                            } catch (jsonErr) {
+                                console.warn(`[RunningHub] 获取工作流定义失败，使用默认节点映射: ${jsonErr.message}`);
+                            }
+
                             // 准备节点参数列表
                             const nodeInfoList = [];
 
@@ -5871,39 +5971,66 @@ You must design a visual composition that tells the story through **8 distinct p
                                 }
                             }
 
-                            // 构建 nodeInfoList
-                            // v2 API AI App 传文件名（不是完整 URL）
-                            // 注意：不同的 AI App 节点 ID 不同，需要根据实际工作流调整
-                            // 根据文档示例：nodeId 12=图片1, 17=图片2, 18=图片3, 15=prompt
-                            const imageNodeIds = ['12', '17', '18', '16'];
-                            uploadedFiles.forEach((file, idx) => {
-                                nodeInfoList.push({
-                                    nodeId: imageNodeIds[idx] || String(10 + idx),
-                                    fieldName: 'image',
-                                    fieldValue: file.fileName  // v2 AI App 传文件名
-                                });
-                            });
+                            // ★ 使用自动发现的节点映射
+                            // 优先使用工作流定义中的节点，如果没有则使用默认节点ID
+                            const imageNodes = nodeMapping.imageNodes || [];
+                            const textNodes = nodeMapping.textNodes || [];
+                            const paramNodes = nodeMapping.paramNodes || [];
 
-                            // 如果有 prompt，添加到节点参数中
+                            // 映射图片到节点
+                            if (imageNodes.length > 0) {
+                                // 使用工作流定义的节点
+                                uploadedFiles.forEach((file, idx) => {
+                                    const targetNode = imageNodes[idx % imageNodes.length];
+                                    if (targetNode) {
+                                        nodeInfoList.push({
+                                            nodeId: targetNode.nodeId,
+                                            fieldName: targetNode.fieldName || 'image',
+                                            fieldValue: file.fileName
+                                        });
+                                        console.log(`[RunningHub] 图片${idx + 1} → 节点 ${targetNode.nodeId} (${targetNode.classType})`);
+                                    }
+                                });
+                            } else {
+                                // 使用默认节点ID（如果自动发现失败）
+                                const defaultImageNodeIds = ['10', '11', '12', '13', '14'];
+                                uploadedFiles.forEach((file, idx) => {
+                                    const nodeId = defaultImageNodeIds[idx] || String(10 + idx);
+                                    nodeInfoList.push({
+                                        nodeId,
+                                        fieldName: 'image',
+                                        fieldValue: file.fileName
+                                    });
+                                    console.log(`[RunningHub] 图片${idx + 1} → 默认节点 ${nodeId}`);
+                                });
+                            }
+
+                            // ★ 如果有 prompt，添加到文本节点
                             if (prompt) {
-                                nodeInfoList.push({
-                                    nodeId: '15',
-                                    fieldName: 'prompt',
-                                    fieldValue: prompt
-                                });
+                                if (textNodes.length > 0) {
+                                    // 使用工作流定义的文本节点
+                                    textNodes.slice(0, 1).forEach(textNode => {
+                                        nodeInfoList.push({
+                                            nodeId: textNode.nodeId,
+                                            fieldName: textNode.fieldName || 'text',
+                                            fieldValue: prompt
+                                        });
+                                        console.log(`[RunningHub] Prompt → 节点 ${textNode.nodeId} (${textNode.classType})`);
+                                    });
+                                } else {
+                                    // 使用默认节点ID
+                                    nodeInfoList.push({
+                                        nodeId: '3',
+                                        fieldName: 'text',
+                                        fieldValue: prompt
+                                    });
+                                    console.log(`[RunningHub] Prompt → 默认节点 3`);
+                                }
                             }
 
-                            // 添加其他参数（ratio, resolution 等）
-                            if (ratio && ratio !== 'Auto') {
-                                nodeInfoList.push({
-                                    nodeId: '15',
-                                    fieldName: 'ratio',
-                                    fieldValue: ratio
-                                });
-                            }
-
-                            // 启动工作流（视频工作流传入标记）
+                            // ★ 启动工作流
                             const isRHVideoWorkflow = modelId === 'runninghub-video' || type === 'video';
+                            console.log(`[RunningHub] 最终 nodeInfoList:`, JSON.stringify(nodeInfoList, null, 2));
                             await runRunningHubWorkflow(effectiveWorkflowId, nodeInfoList, taskId, actualSourceNodeId, w, h, isRHVideoWorkflow);
                             return; // ★ RunningHub 启动完成，等待轮询结果
                         }
@@ -6847,6 +6974,18 @@ You must design a visual composition that tells the story through **8 distinct p
                                 }
                             }
 
+                            // ★ 自动发现工作流节点
+                            console.log(`[RunningHub Video] 开始获取工作流定义: ${effectiveWorkflowId}`);
+                            let workflowJson;
+                            let nodeMapping = { imageNodes: [], videoNodes: [], textNodes: [], paramNodes: [] };
+                            try {
+                                workflowJson = await getRunningHubWorkflowJson(effectiveWorkflowId);
+                                nodeMapping = discoverWorkflowNodes(workflowJson);
+                                console.log(`[RunningHub Video] 工作流节点映射:`, nodeMapping);
+                            } catch (jsonErr) {
+                                console.warn(`[RunningHub Video] 获取工作流定义失败，使用默认节点映射: ${jsonErr.message}`);
+                            }
+
                             // 准备节点参数列表
                             const nodeInfoList = [];
 
@@ -6875,37 +7014,64 @@ You must design a visual composition that tells the story through **8 distinct p
                                 }
                             }
 
-                            // 构建 nodeInfoList
-                            // v2 API AI App 传文件名（不是完整 URL）
-                            // 根据文档示例：nodeId 12=图片1, 17=图片2, 18=图片3, 15=prompt
-                            const imageNodeIds = ['12', '17', '18', '16'];
-                            uploadedFiles.forEach((file, idx) => {
-                                nodeInfoList.push({
-                                    nodeId: imageNodeIds[idx] || String(10 + idx),
-                                    fieldName: 'image',
-                                    fieldValue: file.fileName  // v2 AI App 传文件名
-                                });
-                            });
+                            // ★ 使用自动发现的节点映射
+                            const imageNodes = nodeMapping.imageNodes || [];
+                            const videoNodes = nodeMapping.videoNodes || [];
+                            const textNodes = nodeMapping.textNodes || [];
 
-                            // 如果有 prompt，添加到节点参数中
+                            // 优先使用视频节点（如果有），否则使用图片节点
+                            const mediaNodes = videoNodes.length > 0 ? videoNodes : imageNodes;
+
+                            if (mediaNodes.length > 0) {
+                                // 使用工作流定义的节点
+                                uploadedFiles.forEach((file, idx) => {
+                                    const targetNode = mediaNodes[idx % mediaNodes.length];
+                                    if (targetNode) {
+                                        nodeInfoList.push({
+                                            nodeId: targetNode.nodeId,
+                                            fieldName: targetNode.fieldName || 'image',
+                                            fieldValue: file.fileName
+                                        });
+                                        console.log(`[RunningHub Video] 图片${idx + 1} → 节点 ${targetNode.nodeId} (${targetNode.classType})`);
+                                    }
+                                });
+                            } else {
+                                // 使用默认节点ID
+                                const defaultNodeIds = ['10', '11', '12', '13', '14'];
+                                uploadedFiles.forEach((file, idx) => {
+                                    const nodeId = defaultNodeIds[idx] || String(10 + idx);
+                                    nodeInfoList.push({
+                                        nodeId,
+                                        fieldName: 'image',
+                                        fieldValue: file.fileName
+                                    });
+                                    console.log(`[RunningHub Video] 图片${idx + 1} → 默认节点 ${nodeId}`);
+                                });
+                            }
+
+                            // 如果有 prompt，添加到文本节点
                             if (prompt) {
-                                nodeInfoList.push({
-                                    nodeId: '15',
-                                    fieldName: 'prompt',
-                                    fieldValue: prompt
-                                });
+                                if (textNodes.length > 0) {
+                                    textNodes.slice(0, 1).forEach(textNode => {
+                                        nodeInfoList.push({
+                                            nodeId: textNode.nodeId,
+                                            fieldName: textNode.fieldName || 'text',
+                                            fieldValue: prompt
+                                        });
+                                        console.log(`[RunningHub Video] Prompt → 节点 ${textNode.nodeId}`);
+                                    });
+                                } else {
+                                    nodeInfoList.push({
+                                        nodeId: '3',
+                                        fieldName: 'text',
+                                        fieldValue: prompt
+                                    });
+                                    console.log(`[RunningHub Video] Prompt → 默认节点 3`);
+                                }
                             }
 
-                            // 添加其他参数（ratio, resolution 等）
-                            if (ratio && ratio !== 'Auto') {
-                                nodeInfoList.push({
-                                    nodeId: '15',
-                                    fieldName: 'ratio',
-                                    fieldValue: ratio
-                                });
-                            }
-
-                            // 启动工作流（强制标记为视频工作流）
+                            // ★ 启动工作流（强制标记为视频工作流）
+                            console.log(`[RunningHub Video] 最终 nodeInfoList:`, JSON.stringify(nodeInfoList, null, 2));
                             await runRunningHubWorkflow(effectiveWorkflowId, nodeInfoList, taskId, actualSourceNodeId, w, h, true);
                             return; // ★ RunningHub 启动完成，等待轮询结果
                         }
