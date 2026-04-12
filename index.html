@@ -5981,16 +5981,18 @@ You must design a visual composition that tells the story through **8 distinct p
                                 ];
                                 
                                 // 映射图片到节点
+                                // AI App fieldValue 可能需要完整 URL 或纯文件名，都试试
                                 uploadedFiles.forEach((file, idx) => {
                                     const targetNode = aiAppImageNodes[idx];
                                     if (targetNode) {
-                                        // AI App 使用 pureFileName（纯文件名，不含路径）
+                                        // 优先尝试用 download_url（完整地址）
+                                        const fieldValue = file.url;
                                         nodeInfoList.push({
                                             nodeId: targetNode.nodeId,
                                             fieldName: targetNode.fieldName,
-                                            fieldValue: file.pureFileName
+                                            fieldValue: fieldValue
                                         });
-                                        console.log(`[AI App] 图片${idx + 1} → 节点 ${targetNode.nodeId} (${targetNode.fieldName})`);
+                                        console.log(`[AI App] 图片${idx + 1} → 节点 ${targetNode.nodeId} (${targetNode.fieldName}) = ${fieldValue}`);
                                     }
                                 });
 
