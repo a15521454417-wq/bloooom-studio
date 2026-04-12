@@ -7109,77 +7109,85 @@ You must design a visual composition that tells the story through **8 distinct p
                             }
 
                             if (isAIAppVideo) {
-                                // ===== AI App 模式（固定节点ID）=====
-                                // 完全按照文档示例格式构建请求
-                                console.log(`[AI App Video] 使用的 Workflow ID: ${effectiveWorkflowId}`);
+                                // ===== AI App 模式（完全按照文档示例格式）=====
+                                console.log(`[AI App Video] Workflow ID: ${effectiveWorkflowId}`);
+                                console.log(`[AI App Video] 上传图片数: ${uploadedFiles.length} 张`);
                                 
-                                // AI App 的图片节点：最多3个（nodeId: 2, 9, 10）
-                                // 文档中只有3个图片输入槽位，多余的忽略
-                                const aiAppImageNodes = [
-                                    { nodeId: '2', fieldName: 'image', description: '上传图像1（选填）' },
-                                    { nodeId: '9', fieldName: 'image', description: '上传图像2（选填）' },
-                                    { nodeId: '10', fieldName: 'image', description: '上传图像3（选填）' }
-                                ];
-                                
-                                const validImages = uploadedFiles.slice(0, 3); // 限制最多3张图
-                                console.log(`[AI App Video] 图片总数: ${uploadedFiles.length}, 实际发送: ${validImages.length} 张`);
-                                
-                                // 映射图片到节点
-                                // fieldValue 使用上传返回的 fileName（如 openapi/xxx.png 或纯哈希名）
-                                validImages.forEach((file, idx) => {
-                                    const targetNode = aiAppImageNodes[idx];
-                                    if (targetNode) {
-                                        nodeInfoList.push({
-                                            nodeId: targetNode.nodeId,
-                                            fieldName: targetNode.fieldName,
-                                            fieldValue: file.pureFileName, // 纯文件名（哈希.png）
-                                            description: targetNode.description
-                                        });
-                                        console.log(`[AI App Video] 图片${idx + 1} → 节点${targetNode.nodeId} (${targetNode.fieldName}) = ${file.pureFileName}`);
-                                    }
+                                // 图片节点：根据用户上传数量动态分配到 nodeId 2, 9, 10（循环使用）
+                                const imageNodeIds = ['2', '9', '10'];
+                                uploadedFiles.forEach((file, idx) => {
+                                    const targetNodeId = imageNodeIds[idx % imageNodeIds.length];
+                                    nodeInfoList.push({
+                                        nodeId: targetNodeId,
+                                        fieldName: 'image',
+                                        fieldValue: file.pureFileName,
+                                        description: `上传图像${idx + 1}（选填）`
+                                    });
+                                    console.log(`[AI App Video] 图${idx + 1} → 节点 ${targetNodeId}: ${file.pureFileName}`);
                                 });
 
-                                // ===== 参数节点（nodeId: 1）=====
-                                // duration: 数字字符串，不带后缀
+                                // ===== 参数节点 (nodeId: 1) 完全按文档 =====
+                                // real_person_mode
+                                nodeInfoList.push({
+                                    nodeId: '1',
+                                    fieldName: 'real_person_mode',
+                                    fieldValue: 'true',
+                                    description: '支持真人开关'
+                                });
+                                
+                                // duration
                                 let videoDuration = String(node?.settings?.duration || '5').replace(/s$/i, '');
                                 if (!/^\d+$/.test(videoDuration)) videoDuration = '5';
                                 
-                                // ratio: 枚举值，必须严格匹配
-                                const RATIO_OPTIONS = ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16', '21:9'];
+                                // ratio：枚举值校验
+                                const RATIO_OPTS = ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16', '21:9'];
                                 let rawRatio = String(node?.settings?.ratio || 'adaptive');
-                                let videoRatio = RATIO_OPTIONS.includes(rawRatio) ? rawRatio : 'adaptive';
+                                let videoRatio = RATIO_OPTS.includes(rawRatio) ? rawRatio : 'adaptive';
                                 if (videoRatio === 'Auto' || videoRatio === 'auto') videoRatio = 'adaptive';
                                 
-                                // resolution: 枚举值
-                                const RES_OPTIONS = ['480p', '720p', '1080p', '2k', '4k'];
-                                let videoResolution = RES_OPTIONS.includes(String(node?.settings?.resolution)) ? String(node?.settings?.resolution) : '720p';
-                                
+                                // resolution：枚举值校验
+                                const RES_OPTS = ['480p', '720p', '1080p', '2k', '4k'];
+                                let videoResolution = RES_OPTS.includes(String(node?.settings?.resolution)) ? String(node?.settings?.resolution) : '720p';
+
+                                // duration + fieldData
+                                nodeInfoList.push({
+                                    nodeId: '1',
+                                    fieldName: 'duration',
+                                    fieldData: '[["4","5","6","7","8","9","10","11","12","13","14","15"], {"default":"5"}]',
+                                    fieldValue: videoDuration,
+                                    description: '时长（秒）'
+                                });
+
+                                // ratio + fieldData
+                                nodeInfoList.push({
+                                    nodeId: '1',
+                                    fieldName: 'ratio',
+                                    fieldData: '[["adaptive","16:9","4:3","1:1","3:4","9:16","21:9"], {"default":"adaptive"}]',
+                                    fieldValue: videoRatio,
+                                    description: '比例'
+                                });
+
+                                // resolution + fieldData
+                                nodeInfoList.push({
+                                    nodeId: '1',
+                                    fieldName: 'resolution',
+                                    fieldData: '[{"name":"480p","index":"480p"},{"name":"720p","index":"720p"},{"name":"1080p","index":"1080p"},{"name":"2k","index":"2k"},{"name":"4k","index":"4k"}]',
+                                    fieldValue: videoResolution,
+                                    description: '分辨率'
+                                });
+
                                 // prompt
                                 if (prompt) {
-                                    nodeInfoList.push({ nodeId: '1', fieldName: 'prompt', fieldValue: prompt, description: '输入文本' });
-                                    console.log(`[AI App Video] Prompt → 节点1`);
+                                    nodeInfoList.push({
+                                        nodeId: '1',
+                                        fieldName: 'prompt',
+                                        fieldValue: prompt,
+                                        description: '输入文本'
+                                    });
+                                    console.log(`[AI App Video] Prompt 已添加 (${prompt.length} 字)`);
                                 }
                                 
-                                // 视频参数（按文档格式）
-                                nodeInfoList.push({ 
-                                    nodeId: '1', fieldName: 'duration', 
-                                    fieldData: JSON.stringify([['4','5','6','7','8','9','10','11','12','13','14','15'], {'default':'5'}]),
-                                    fieldValue: videoDuration, 
-                                    description: '时长（秒）' 
-                                });
-                                nodeInfoList.push({ 
-                                    nodeId: '1', fieldName: 'ratio', 
-                                    fieldData: JSON.stringify([['adaptive','16:9','4:3','1:1','3:4','9:16','21:9'],{'default':'adaptive'}]),
-                                    fieldValue: videoRatio, 
-                                    description: '比例' 
-                                });
-                                nodeInfoList.push({ 
-                                    nodeId: '1', fieldName: 'resolution',
-                                    fieldData: JSON.stringify([{name:'480p',index:'480p'},{name:'720p',index:'720p'},{name:'1080p',index:'1080p'},{name:'2k',index:'2k'},{name:'4k',index:'4k'}]),
-                                    fieldValue: videoResolution, 
-                                    description: '分辨率' 
-                                });
-                                console.log(`[AI App Video] 视频参数 → duration=${videoDuration}, ratio=${videoRatio}, resolution=${videoResolution}`);
+                                console.log(`[AI App Video] 参数 → duration=${videoDuration}, ratio=${videoRatio}, res=${videoResolution}`);
                                 
                             } else {
                                 // ===== ComfyUI 工作流模式（自动发现节点）=====
