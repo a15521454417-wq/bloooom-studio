@@ -4577,8 +4577,17 @@ You must design a visual composition that tells the story through **8 distinct p
                     // RunningHub v2 API：
                     // - ComfyUI 工作流：/openapi/v2/run/workflow/{workflowId}
                     // - AI App：/openapi/v2/run/ai-app/{workflowId}
+                    // 清理 workflowId，只保留纯 ID（去掉 /run/workflow/ 或 /run/ai-app/ 前缀）
+                    let cleanWorkflowId = workflowId;
+                    if (workflowId.includes('/run/workflow/')) {
+                        cleanWorkflowId = workflowId.split('/run/workflow/').pop();
+                    } else if (workflowId.includes('/run/ai-app/')) {
+                        cleanWorkflowId = workflowId.split('/run/ai-app/').pop();
+                    }
+                    
                     const endpoint = isAIApp ? 'ai-app' : 'workflow';
-                    const url = `${RUNNINGHUB_BASE_URL}/openapi/v2/run/${endpoint}/${workflowId}`;
+                    const url = `${RUNNINGHUB_BASE_URL}/openapi/v2/run/${endpoint}/${cleanWorkflowId}`;
+                    console.log(`[RunningHub] 原始 workflowId: ${workflowId} → 清理后: ${cleanWorkflowId}`);
                     
                     const payload = {
                         addMetadata: true,
@@ -4637,13 +4646,21 @@ You must design a visual composition that tells the story through **8 distinct p
             // ===== 获取 RunningHub 工作流 JSON 配置 =====
             const getRunningHubWorkflowJson = async (workflowId) => {
                 try {
+                    // 清理 workflowId
+                    let cleanWorkflowId = workflowId;
+                    if (workflowId.includes('/run/workflow/')) {
+                        cleanWorkflowId = workflowId.split('/run/workflow/').pop();
+                    } else if (workflowId.includes('/run/ai-app/')) {
+                        cleanWorkflowId = workflowId.split('/run/ai-app/').pop();
+                    }
+                    
                     const resp = await fetch(`${RUNNINGHUB_BASE_URL}/api/comfyui/workflow/json`, {
                         method: 'POST',
                         headers: {
                             'Authorization': `Bearer ${runninghubApiKey}`,
                             'Content-Type': 'application/json'
                         },
-                        body: JSON.stringify({ workflowId })
+                        body: JSON.stringify({ workflowId: cleanWorkflowId })
                     });
 
                     if (!resp.ok) {
