@@ -6031,8 +6031,13 @@ You must design a visual composition that tells the story through **8 distinct p
                                 
                                 // 可选：添加时长、比例、分辨率参数
                                 // 从节点设置或全局设置中读取
-                                const videoDuration = node?.settings?.duration || '5';
-                                const videoRatio = node?.settings?.ratio || '16:9';
+                                // duration 格式：数字字符串，不带 "s" 后缀
+                                let videoDuration = (node?.settings?.duration || '5').toString();
+                                if (videoDuration.endsWith('s')) {
+                                    videoDuration = videoDuration.slice(0, -1);
+                                }
+                                // ratio 格式：adaptive, 16:9, 4:3, 1:1, 3:4, 9:16, 21:9
+                                const videoRatio = node?.settings?.ratio || 'adaptive';
                                 const videoResolution = node?.settings?.resolution || '720p';
                                 
                                 nodeInfoList.push({
@@ -7137,7 +7142,8 @@ You must design a visual composition that tells the story through **8 distinct p
                                 if (videoDuration.endsWith('s')) {
                                     videoDuration = videoDuration.slice(0, -1); // 去掉 "s" 后缀
                                 }
-                                const videoRatio = node?.settings?.ratio || '16:9';
+                                // ratio 格式：adaptive, 16:9, 4:3, 1:1, 3:4, 9:16, 21:9
+                                const videoRatio = node?.settings?.ratio || 'adaptive';
                                 const videoResolution = node?.settings?.resolution || '720p';
                                 
                                 nodeInfoList.push({ nodeId: '1', fieldName: 'duration', fieldValue: videoDuration });
