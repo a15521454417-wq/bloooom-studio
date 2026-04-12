@@ -4386,7 +4386,7 @@ You must design a visual composition that tells the story through **8 distinct p
                     const resp = await fetch(statusEndpoint, {
                         method: 'GET',
                         headers: {
-                            'API-KEY': runninghubApiKey
+                            'Authorization': `Bearer ${runninghubApiKey}`
                         }
                     });
 
@@ -4542,7 +4542,7 @@ You must design a visual composition that tells the story through **8 distinct p
                     const resp = await fetch(`${RUNNINGHUB_BASE_URL}/api/upload`, {
                         method: 'POST',
                         headers: {
-                            'API-KEY': runninghubApiKey
+                            'Authorization': `Bearer ${runninghubApiKey}`
                         },
                         body: formData
                     });
@@ -4578,10 +4578,10 @@ You must design a visual composition that tells the story through **8 distinct p
                         payload.webhook = runninghubWebhook;
                     }
 
-                    const resp = await fetch(`${RUNNINGHUB_BASE_URL}/api/task/run/workflow`, {
+                    const resp = await fetch(`${RUNNINGHUB_BASE_URL}/api/comfyui/task/run`, {
                         method: 'POST',
                         headers: {
-                            'API-KEY': runninghubApiKey,
+                            'Authorization': `Bearer ${runninghubApiKey}`,
                             'Content-Type': 'application/json'
                         },
                         body: JSON.stringify(payload)
@@ -4620,10 +4620,10 @@ You must design a visual composition that tells the story through **8 distinct p
             // ===== 获取 RunningHub 工作流 JSON 配置 =====
             const getRunningHubWorkflowJson = async (workflowId) => {
                 try {
-                    const resp = await fetch(`${RUNNINGHUB_BASE_URL}/api/workflow/json`, {
+                    const resp = await fetch(`${RUNNINGHUB_BASE_URL}/api/comfyui/workflow/json`, {
                         method: 'POST',
                         headers: {
-                            'API-KEY': runninghubApiKey,
+                            'Authorization': `Bearer ${runninghubApiKey}`,
                             'Content-Type': 'application/json'
                         },
                         body: JSON.stringify({ workflowId })
