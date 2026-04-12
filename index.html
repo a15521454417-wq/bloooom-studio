@@ -7179,6 +7179,7 @@ You must design a visual composition that tells the story through **8 distinct p
                             console.log(`[RunningHub Video] 最终 nodeInfoList:`, JSON.stringify(nodeInfoList, null, 2));
                             await runRunningHubWorkflow(effectiveWorkflowId, nodeInfoList, taskId, actualSourceNodeId, w, h, true, false);
                             return;
+                        }
 
                         // Veo 3.x 图生视频：按 /v2/videos/generations 规范发送 JSON，使用 images 数组而不是 input_image
                         if (modelId.includes('veo')) {
