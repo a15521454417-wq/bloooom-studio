@@ -4690,20 +4690,20 @@ You must design a visual composition that tells the story through **8 distinct p
             // ===== 自动发现工作流节点映射 =====
             // 分析工作流 JSON，找到图片/视频/文本输入节点
             const discoverWorkflowNodes = (workflowJson) => {
-                const imageNodes = [];   // 图片输入节点
+                const imageNodes = [];   // 图片输入节点（LoadImage等）
                 const videoNodes = [];   // 视频输入节点
                 const textNodes = [];    // 文本输入节点
                 const paramNodes = [];   // 其他参数节点
+                const openApiNodes = []; // OpenAPI 主参数节点（如 RH_Seedance2.0，含 image1~imageN）
 
                 // ComfyUI 常见的输入节点类型
                 const IMAGE_NODE_TYPES = ['LoadImage', 'LoadImageBHB', 'LoadImagesFromFolder'];
                 const VIDEO_NODE_TYPES = ['LoadVideo', 'LoadVideoPath', 'LoadVideoNode'];
                 const TEXT_NODE_TYPES = ['CLIPTextEncode', 'TextEncode'];
-                const PARAM_NODE_TYPES = ['EmptyLatentImage', 'ControlNetLoader', 'KSampler'];
 
                 if (!workflowJson || typeof workflowJson !== 'object') {
                     console.warn('[Tapnow] 工作流JSON格式无效');
-                    return { imageNodes, videoNodes, textNodes, paramNodes };
+                    return { imageNodes, videoNodes, textNodes, paramNodes, openApiNodes };
                 }
 
                 // 遍历工作流节点
@@ -4715,7 +4715,6 @@ You must design a visual composition that tells the story through **8 distinct p
 
                     // 检查是否是图片输入节点
                     if (IMAGE_NODE_TYPES.includes(classType)) {
-                        // LoadImage 节点的 image 字段就是图片
                         if ('image' in inputs) {
                             imageNodes.push({
                                 nodeId,
@@ -4727,7 +4726,6 @@ You must design a visual composition that tells the story through **8 distinct p
 
                     // 检查是否是视频输入节点
                     if (VIDEO_NODE_TYPES.includes(classType)) {
-                        // 视频节点通常有 video 或 video_path 字段
                         const videoField = inputs.video ? 'video' : inputs.video_path ? 'video_path' : null;
                         if (videoField) {
                             videoNodes.push({
@@ -4740,7 +4738,6 @@ You must design a visual composition that tells the story through **8 distinct p
 
                     // 检查是否是文本输入节点
                     if (TEXT_NODE_TYPES.includes(classType)) {
-                        // CLIPTextEncode 节点的 text 字段就是提示词
                         if ('text' in inputs) {
                             textNodes.push({
                                 nodeId,
@@ -4750,7 +4747,36 @@ You must design a visual composition that tells the story through **8 distinct p
                         }
                     }
 
-                    // 检查是否有其他可调参数（resolution, seed, steps 等）
+                    // ★ 检测 OpenAPI 类型节点（如 RH_Seedance2.0 OpenAPI）
+                    // 特征：包含 image1~image8、video1~video2、duration/ratio 等字段
+                    const inputKeys = Object.keys(inputs).filter(k => !k.startsWith('_'));
+                    const hasImageSeqFields = inputKeys.some(k => /^image\d+$/.test(k));
+                    const hasVideoSeqFields = inputKeys.some(k => /^video\d+$/.test(k));
+                    const hasDurationField = inputKeys.includes('duration') || inputKeys.includes('tokenization');
+                    
+                    if ((hasImageSeqFields || hasVideoSeqFields || hasDurationField) && 
+                        !IMAGE_NODE_TYPES.includes(classType) && 
+                        !VIDEO_NODE_TYPES.includes(classType)) {
+                        // 收集所有字段名用于后续精确匹配
+                        const imageFields = inputKeys.filter(k => /^image\d+$/.test(k)).sort();
+                        const videoFields = inputKeys.filter(k => /^video\d+$/.test(k)).sort();
+                        
+                        openApiNodes.push({
+                            nodeId,
+                            classType,
+                            fieldNames: inputKeys,
+                            imageFields,    // ['image1','image2',...]
+                            videoFields,     // ['video1','video2']
+                            hasPrompt: inputKeys.includes('prompt'),
+                            hasText: inputKeys.includes('text'),
+                            hasDuration: inputKeys.includes('duration'),
+                            hasRatio: inputKeys.includes('ratio'),
+                            hasRealPersonMode: inputKeys.includes('real_person_mode')
+                        });
+                        console.log(`[Tapnow] 发现 OpenAPI 节点 ${nodeId} [${classType}]: imageFields=${JSON.stringify(imageFields)}, videoFields=${JSON.stringify(videoFields)}`);
+                    }
+
+                    // 检查是否有其他可调参数
                     const paramFields = ['resolution', 'width', 'height', 'seed', 'steps', 'cfg', 'denoise', 'sampler_name'];
                     for (const field of paramFields) {
                         if (field in inputs) {
@@ -4760,7 +4786,7 @@ You must design a visual composition that tells the story through **8 distinct p
                                 classType,
                                 currentValue: inputs[field]
                             });
-                            break; // 只记录一次
+                            break;
                         }
                     }
                 }
@@ -4769,8 +4795,11 @@ You must design a visual composition that tells the story through **8 distinct p
                     images: imageNodes,
                     videos: videoNodes,
                     texts: textNodes,
-                    params: paramNodes.slice(0, 5) // 只显示前5个
+                    openApi: openApiNodes,
+                    params: paramNodes.slice(0, 5)
                 });
+
+                return { imageNodes, videoNodes, textNodes, paramNodes, openApiNodes };
 
                 return { imageNodes, videoNodes, textNodes, paramNodes };
             };
@@ -7193,74 +7222,82 @@ You must design a visual composition that tells the story through **8 distinct p
                                 // ===== ComfyUI 工作流模式（自动发现节点）=====
                                 console.log(`[RunningHub Video] 开始获取工作流定义: ${effectiveWorkflowId}`);
                                 let workflowJson;
-                                let nodeMapping = { imageNodes: [], videoNodes: [], textNodes: [], paramNodes: [] };
+                                let nodeMapping = { imageNodes: [], videoNodes: [], textNodes: [], paramNodes: [], openApiNodes: [] };
                                 try {
                                     workflowJson = await getRunningHubWorkflowJson(effectiveWorkflowId);
                                     nodeMapping = discoverWorkflowNodes(workflowJson);
-                                    console.log(`[RunningHub Video] 工作流节点映射:`, nodeMapping);
+                                    console.log(`[RunningHub Video] 工作流节点映射:`, {
+                                        imageNodes: nodeMapping.imageNodes,
+                                        textNodes: nodeMapping.textNodes,
+                                        openApiNodes: nodeMapping.openApiNodes.map(n => ({id:n.nodeId, type:n.classType}))
+                                    });
                                 } catch (jsonErr) {
-                                    console.warn(`[RunningHub Video] 获取工作流定义失败，使用默认节点映射: ${jsonErr.message}`);
+                                    console.warn(`[RunningHub Video] 获取工作流定义失败: ${jsonErr.message}`);
                                 }
 
-                                // ★ 使用自动发现的节点映射
-                                const imageNodes = nodeMapping.imageNodes || [];
-                                const videoNodes = nodeMapping.videoNodes || [];
-                                const textNodes = nodeMapping.textNodes || [];
+                                const imageNodes = nodeMapping.imageNodes || [];   // LoadImage 等节点
+                                const openApiNodes = nodeMapping.openApiNodes || []; // Seedance2.0 等主参数节点
 
-                                // 优先使用视频节点（如果有），否则使用图片节点
-                                const mediaNodes = videoNodes.length > 0 ? videoNodes : imageNodes;
-
-                            if (mediaNodes.length > 0) {
-                                // 使用工作流定义的节点
-                                uploadedFiles.forEach((file, idx) => {
-                                    const targetNode = mediaNodes[idx % mediaNodes.length];
-                                    if (targetNode) {
+                                // ===== 图片处理 =====
+                                if (uploadedFiles.length > 0 && imageNodes.length > 0) {
+                                    // 有 LoadImage 节点 → 循环分配（用 fileName）
+                                    uploadedFiles.forEach((file, idx) => {
+                                        const targetNode = imageNodes[idx % imageNodes.length];
                                         nodeInfoList.push({
                                             nodeId: targetNode.nodeId,
-                                            fieldName: targetNode.fieldName || 'image',
-                                            fieldValue: file.fileName
+                                            fieldName: 'image',
+                                            fieldValue: file.fileName  // openapi/xxx.png
                                         });
-                                        console.log(`[RunningHub Video] 图片${idx + 1} → 节点 ${targetNode.nodeId} (${targetNode.classType})`);
-                                    }
-                                });
-                            } else {
-                                // ⚠️ 未发现有效的图片/视频输入节点，跳过图片上传
-                                console.warn(`[RunningHub Video] ⚠️ 工作流中未发现图片/视频输入节点（LoadImage/LoadVideo），已跳过 ${uploadedFiles.length} 张图片`);
-                                console.warn(`[RunningHub Video] 如需传入图片，请确认工作流包含 LoadImage 或 LoadVideo 类型节点`);
-                            }
-
-                            // 如果有 prompt，添加到文本节点
-                            if (prompt) {
-                                if (textNodes.length > 0) {
-                                    textNodes.slice(0, 1).forEach(textNode => {
-                                        nodeInfoList.push({
-                                            nodeId: textNode.nodeId,
-                                            fieldName: textNode.fieldName || 'text',
-                                            fieldValue: prompt
-                                        });
-                                        console.log(`[RunningHub Video] Prompt → 节点 ${textNode.nodeId}`);
+                                        console.log(`[RunningHub Video] 图片${idx + 1} → LoadImage#${targetNode.nodeId}.image`);
                                     });
-                                } else {
-                                    // 未发现文本节点，尝试用通用参数节点（如果有）
-                                    const paramNodes = nodeMapping.paramNodes || [];
-                                    if (paramNodes.length > 0) {
+                                } else if (uploadedFiles.length > 0 && openApiNodes.length > 0) {
+                                    // 无 LoadImage 但有 OpenAPI 主参数节点 → 用 image1~imageN（用 pureFileName）
+                                    const oa = openApiNodes[0];
+                                    const imgFields = oa.imageFields || [];
+                                    if (imgFields.length > 0) {
+                                        uploadedFiles.forEach((file, idx) => {
+                                            if (idx < imgFields.length) {
+                                                nodeInfoList.push({ nodeId: oa.nodeId, fieldName: imgFields[idx], fieldValue: file.pureFileName });
+                                                console.log(`[RunningHub Video] 图片${idx + 1} → OpenAPI#${oa.nodeId}.${imgFields[idx]}: ${file.pureFileName}`);
+                                            }
+                                        });
+                                    } else {
+                                        console.warn(`[RunningHub Video] ⚠️ OpenAPI 节点无 image 字段，跳过 ${uploadedFiles.length} 张图`);
+                                    }
+                                } else if (uploadedFiles.length > 0) {
+                                    console.warn(`[RunningHub Video] ⚠️ 未发现任何图片输入节点，已跳过 ${uploadedFiles.length} 张图片`);
+                                }
+
+                                // ===== Prompt 处理 =====
+                                if (prompt) {
+                                    // 优先：OpenAPI 主节点的 prompt
+                                    if (openApiNodes.length > 0 && openApiNodes[0].hasPrompt) {
                                         nodeInfoList.push({
-                                            nodeId: paramNodes[0].nodeId,
-                                            fieldName: paramNodes[0].fieldName || 'prompt',
+                                            nodeId: openApiNodes[0].nodeId,
+                                            fieldName: 'prompt',
                                             fieldValue: prompt
                                         });
-                                        console.log(`[RunningHub Video] Prompt → 参数节点 ${paramNodes[0].nodeId}`);
+                                        console.log(`[RunningHub Video] Prompt → OpenAPI#${openApiNodes[0].nodeId}.prompt`);
+                                    }
+                                    // 其次：CLIPTextEncode 的 text
+                                    else if (nodeMapping.textNodes?.length > 0) {
+                                        const tn = nodeMapping.textNodes[0];
+                                        nodeInfoList.push({
+                                            nodeId: tn.nodeId,
+                                            fieldName: tn.fieldName || 'text',
+                                            fieldValue: prompt
+                                        });
+                                        console.log(`[RunningHub Video] Prompt → 文本节点#${tn.nodeId}`);
                                     } else {
-                                        console.warn(`[RunningHub Video] ⚠️ 工作流中未发现文本/参数输入节点，Prompt 将不传入`);
+                                        console.warn(`[RunningHub Video] ⚠️ 未发现文本输入节点，Prompt 不传入`);
                                     }
                                 }
                             }
-                            }
 
-                            // ★ 启动工作流（强制标记为视频工作流）
+                            // ★ 启动工作流（ComfyUI 模式）
                             console.log(`[RunningHub Video] 最终 nodeInfoList:`, JSON.stringify(nodeInfoList, null, 2));
-                            await runRunningHubWorkflow(effectiveWorkflowId, nodeInfoList, taskId, actualSourceNodeId, w, h, true, isAIAppVideo);
-                            return; // ★ RunningHub 启动完成，等待轮询结果
+                            await runRunningHubWorkflow(effectiveWorkflowId, nodeInfoList, taskId, actualSourceNodeId, w, h, true, false);
+                            return;
                         }
 
                         // Veo 3.x 图生视频：按 /v2/videos/generations 规范发送 JSON，使用 images 数组而不是 input_image
