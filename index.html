@@ -4595,11 +4595,11 @@ You must design a visual composition that tells the story through **8 distinct p
                         instanceType: 'default',
                         usePersonalQueue: 'false'
                     } : {
-                        // ComfyUI 工作流格式
+                        // ComfyUI 工作流格式（按文档标准）
                         addMetadata: true,
                         nodeInfoList: nodeInfoList,
                         instanceType: 'default',
-                        usePersonalQueue: false
+                        usePersonalQueue: 'false'
                     };
 
                     const resp = await fetch(url, {
@@ -7059,8 +7059,6 @@ You must design a visual composition that tells the story through **8 distinct p
                     if (type === 'video') {
                         // ★ RunningHub 视频工作流（需要在其他视频 API 之前检查）
                         const isRunningHubVideo = modelId === 'runninghub-video' || config?.isRunningHub === true;
-                        // ★ AI App 模式：使用 AI App 格式（固定节点ID）
-                        const isAIAppVideo = modelId === 'runninghub-video';
                         
                         if (isRunningHubVideo) {
                             // 获取节点设置中的 Workflow ID（优先使用节点独立的设置）
@@ -7092,178 +7090,95 @@ You must design a visual composition that tells the story through **8 distinct p
                             const uploadedFiles = [];
                             for (let i = 0; i < allImages.length; i++) {
                                 try {
-                                    // v2 API 返回 { fileName, url, pureFileName }
                                     const uploadResult = await uploadToRunningHub(allImages[i]);
                                     uploadedFiles.push({
                                         index: i,
-                                        fileName: uploadResult.fileName,        // openapi/xxx.png
-                                        pureFileName: uploadResult.pureFileName, // xxx.png
+                                        fileName: uploadResult.fileName,
+                                        pureFileName: uploadResult.pureFileName,
                                         url: uploadResult.url,
                                         originalUrl: allImages[i]
                                     });
-                                    console.log(`[RunningHub v2 Video] 图片 ${i + 1} 上传成功:`, uploadResult);
+                                    console.log(`[RunningHub Video] 图片 ${i + 1} 上传成功:`, uploadResult);
                                 } catch (uploadErr) {
-                                    console.error(`[RunningHub v2 Video] 图片 ${i + 1} 上传失败:`, uploadErr);
+                                    console.error(`[RunningHub Video] 图片 ${i + 1} 上传失败:`, uploadErr);
                                     throw new Error(`图片上传失败: ${uploadErr.message}`);
                                 }
                             }
 
-                            if (isAIAppVideo) {
-                                // ===== AI App 模式（完全按照文档示例格式）=====
-                                console.log(`[AI App Video] Workflow ID: ${effectiveWorkflowId}`);
-                                console.log(`[AI App Video] 上传图片数: ${uploadedFiles.length} 张`);
-                                
-                                // 图片节点：根据用户上传数量动态分配到 nodeId 2, 9, 10（循环使用）
-                                const imageNodeIds = ['2', '9', '10'];
+                            // ===== ComfyUI 工作流模式（按文档格式） =====
+                            console.log(`[RunningHub Video] Workflow ID: ${effectiveWorkflowId}`);
+                            console.log(`[RunningHub Video] 上传图片数: ${uploadedFiles.length} 张`);
+
+                            // 获取工作流定义，自动发现可用节点
+                            let workflowJson;
+                            let nodeMapping = { imageNodes: [], videoNodes: [], textNodes: [], paramNodes: [] };
+                            try {
+                                workflowJson = await getRunningHubWorkflowJson(effectiveWorkflowId);
+                                nodeMapping = discoverWorkflowNodes(workflowJson);
+                                console.log(`[RunningHub Video] 工作流节点映射:`, nodeMapping);
+                            } catch (jsonErr) {
+                                console.warn(`[RunningHub Video] 获取工作流定义失败，使用默认节点映射: ${jsonErr.message}`);
+                            }
+
+                            const imageNodes = nodeMapping.imageNodes || [];
+                            const videoNodes = nodeMapping.videoNodes || [];
+                            const textNodes = nodeMapping.textNodes || [];
+
+                            // 优先使用视频节点（如果有），否则使用图片节点
+                            const mediaNodes = videoNodes.length > 0 ? videoNodes : imageNodes;
+
+                            if (mediaNodes.length > 0) {
+                                // 使用工作流自动发现的节点（循环分配，不限制数量）
                                 uploadedFiles.forEach((file, idx) => {
-                                    const targetNodeId = imageNodeIds[idx % imageNodeIds.length];
-                                    nodeInfoList.push({
-                                        nodeId: targetNodeId,
-                                        fieldName: 'image',
-                                        fieldValue: file.pureFileName,
-                                        description: `上传图像${idx + 1}（选填）`
-                                    });
-                                    console.log(`[AI App Video] 图${idx + 1} → 节点 ${targetNodeId}: ${file.pureFileName}`);
-                                });
-
-                                // ===== 参数节点 (nodeId: 1) 完全按文档 =====
-                                // real_person_mode
-                                nodeInfoList.push({
-                                    nodeId: '1',
-                                    fieldName: 'real_person_mode',
-                                    fieldValue: 'true',
-                                    description: '支持真人开关'
-                                });
-                                
-                                // duration
-                                let videoDuration = String(node?.settings?.duration || '5').replace(/s$/i, '');
-                                if (!/^\d+$/.test(videoDuration)) videoDuration = '5';
-                                
-                                // ratio：枚举值校验
-                                const RATIO_OPTS = ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16', '21:9'];
-                                let rawRatio = String(node?.settings?.ratio || 'adaptive');
-                                let videoRatio = RATIO_OPTS.includes(rawRatio) ? rawRatio : 'adaptive';
-                                if (videoRatio === 'Auto' || videoRatio === 'auto') videoRatio = 'adaptive';
-                                
-                                // resolution：枚举值校验
-                                const RES_OPTS = ['480p', '720p', '1080p', '2k', '4k'];
-                                let videoResolution = RES_OPTS.includes(String(node?.settings?.resolution)) ? String(node?.settings?.resolution) : '720p';
-
-                                // duration + fieldData
-                                nodeInfoList.push({
-                                    nodeId: '1',
-                                    fieldName: 'duration',
-                                    fieldData: '[["4","5","6","7","8","9","10","11","12","13","14","15"], {"default":"5"}]',
-                                    fieldValue: videoDuration,
-                                    description: '时长（秒）'
-                                });
-
-                                // ratio + fieldData
-                                nodeInfoList.push({
-                                    nodeId: '1',
-                                    fieldName: 'ratio',
-                                    fieldData: '[["adaptive","16:9","4:3","1:1","3:4","9:16","21:9"], {"default":"adaptive"}]',
-                                    fieldValue: videoRatio,
-                                    description: '比例'
-                                });
-
-                                // resolution + fieldData
-                                nodeInfoList.push({
-                                    nodeId: '1',
-                                    fieldName: 'resolution',
-                                    fieldData: '[{"name":"480p","index":"480p"},{"name":"720p","index":"720p"},{"name":"1080p","index":"1080p"},{"name":"2k","index":"2k"},{"name":"4k","index":"4k"}]',
-                                    fieldValue: videoResolution,
-                                    description: '分辨率'
-                                });
-
-                                // prompt
-                                if (prompt) {
-                                    nodeInfoList.push({
-                                        nodeId: '1',
-                                        fieldName: 'prompt',
-                                        fieldValue: prompt,
-                                        description: '输入文本'
-                                    });
-                                    console.log(`[AI App Video] Prompt 已添加 (${prompt.length} 字)`);
-                                }
-                                
-                                console.log(`[AI App Video] 参数 → duration=${videoDuration}, ratio=${videoRatio}, res=${videoResolution}`);
-                                
-                            } else {
-                                // ===== ComfyUI 工作流模式（自动发现节点）=====
-                                console.log(`[RunningHub Video] 开始获取工作流定义: ${effectiveWorkflowId}`);
-                                let workflowJson;
-                                let nodeMapping = { imageNodes: [], videoNodes: [], textNodes: [], paramNodes: [] };
-                                try {
-                                    workflowJson = await getRunningHubWorkflowJson(effectiveWorkflowId);
-                                    nodeMapping = discoverWorkflowNodes(workflowJson);
-                                    console.log(`[RunningHub Video] 工作流节点映射:`, nodeMapping);
-                                } catch (jsonErr) {
-                                    console.warn(`[RunningHub Video] 获取工作流定义失败，使用默认节点映射: ${jsonErr.message}`);
-                                }
-
-                                // ★ 使用自动发现的节点映射
-                                const imageNodes = nodeMapping.imageNodes || [];
-                                const videoNodes = nodeMapping.videoNodes || [];
-                                const textNodes = nodeMapping.textNodes || [];
-
-                                // 优先使用视频节点（如果有），否则使用图片节点
-                                const mediaNodes = videoNodes.length > 0 ? videoNodes : imageNodes;
-
-                                if (mediaNodes.length > 0) {
-                                    // 使用工作流定义的节点
-                                    uploadedFiles.forEach((file, idx) => {
-                                        const targetNode = mediaNodes[idx % mediaNodes.length];
-                                        if (targetNode) {
-                                            nodeInfoList.push({
-                                                nodeId: targetNode.nodeId,
-                                                fieldName: targetNode.fieldName || 'image',
-                                                fieldValue: file.fileName
-                                            });
-                                            console.log(`[RunningHub Video] 图片${idx + 1} → 节点 ${targetNode.nodeId} (${targetNode.classType})`);
-                                        }
-                                    });
-                                } else {
-                                    // 使用默认节点ID
-                                    const defaultNodeIds = ['10', '11', '12', '13', '14'];
-                                    uploadedFiles.forEach((file, idx) => {
-                                        const nodeId = defaultNodeIds[idx] || String(10 + idx);
+                                    const targetNode = mediaNodes[idx % mediaNodes.length];
+                                    if (targetNode) {
                                         nodeInfoList.push({
-                                            nodeId,
-                                            fieldName: 'image',
+                                            nodeId: targetNode.nodeId,
+                                            fieldName: targetNode.fieldName || 'image',
                                             fieldValue: file.fileName
                                         });
-                                        console.log(`[RunningHub Video] 图片${idx + 1} → 默认节点 ${nodeId}`);
+                                        console.log(`[RunningHub Video] 图片${idx + 1} → 节点 ${targetNode.nodeId} (${targetNode.classType})`);
+                                    }
+                                });
+                            } else {
+                                // 兜底：使用默认节点ID
+                                const defaultNodeIds = ['10', '11', '12', '13', '14'];
+                                uploadedFiles.forEach((file, idx) => {
+                                    const nodeId = defaultNodeIds[idx] || String(10 + idx);
+                                    nodeInfoList.push({
+                                        nodeId,
+                                        fieldName: 'image',
+                                        fieldValue: file.fileName
                                     });
-                                }
+                                    console.log(`[RunningHub Video] 图片${idx + 1} → 默认节点 ${nodeId}`);
+                                });
+                            }
 
-                                // 如果有 prompt，添加到文本节点
-                                if (prompt) {
-                                    if (textNodes.length > 0) {
-                                        textNodes.slice(0, 1).forEach(textNode => {
-                                            nodeInfoList.push({
-                                                nodeId: textNode.nodeId,
-                                                fieldName: textNode.fieldName || 'text',
-                                                fieldValue: prompt
-                                            });
-                                            console.log(`[RunningHub Video] Prompt → 节点 ${textNode.nodeId}`);
-                                        });
-                                    } else {
+                            // 如果有 prompt，添加到文本节点
+                            if (prompt) {
+                                if (textNodes.length > 0) {
+                                    textNodes.slice(0, 1).forEach(textNode => {
                                         nodeInfoList.push({
-                                            nodeId: '3',
-                                            fieldName: 'text',
+                                            nodeId: textNode.nodeId,
+                                            fieldName: textNode.fieldName || 'text',
                                             fieldValue: prompt
                                         });
-                                        console.log(`[RunningHub Video] Prompt → 默认节点 3`);
-                                    }
+                                        console.log(`[RunningHub Video] Prompt → 节点 ${textNode.nodeId}`);
+                                    });
+                                } else {
+                                    nodeInfoList.push({
+                                        nodeId: '3',
+                                        fieldName: 'text',
+                                        fieldValue: prompt
+                                    });
+                                    console.log(`[RunningHub Video] Prompt → 默认节点 3`);
                                 }
                             }
 
-                            // ★ 启动工作流（强制标记为视频工作流）
+                            // ★ 启动工作流（ComfyUI 工作流模式，isAIApp=false）
                             console.log(`[RunningHub Video] 最终 nodeInfoList:`, JSON.stringify(nodeInfoList, null, 2));
-                            await runRunningHubWorkflow(effectiveWorkflowId, nodeInfoList, taskId, actualSourceNodeId, w, h, true, isAIAppVideo);
-                            return; // ★ RunningHub 启动完成，等待轮询结果
-                        }
+                            await runRunningHubWorkflow(effectiveWorkflowId, nodeInfoList, taskId, actualSourceNodeId, w, h, true, false);
+                            return;
 
                         // Veo 3.x 图生视频：按 /v2/videos/generations 规范发送 JSON，使用 images 数组而不是 input_image
                         if (modelId.includes('veo')) {
