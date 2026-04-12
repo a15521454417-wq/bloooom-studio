@@ -4552,7 +4552,7 @@ You must design a visual composition that tells the story through **8 distinct p
 
                     // v2 API 返回格式：{ code: 0, message: 'success', data: { fileName: 'openapi/xxx.png', download_url: '...' } }
                     if (data.code === 0 && data.data) {
-                        // 返回完整对象，包含 fileName 和 download_url（v2 需要完整 URL）
+                        // 返回文件名（v2 API nodeInfoList 只需要文件名，不需要完整 URL）
                         return {
                             fileName: data.data.fileName,
                             url: data.data.download_url || data.data.url || `https://www.runninghub.cn/${data.data.fileName}`
@@ -4569,8 +4569,9 @@ You must design a visual composition that tells the story through **8 distinct p
             // ===== RunningHub 启动工作流函数（v2 API）=====
             const runRunningHubWorkflow = async (workflowId, nodeInfoList, taskId, sourceNodeId, w, h, isVideoWorkflow = false) => {
                 try {
-                    // RunningHub v2 API 官方文档：https://www.runninghub.cn/openapi/v2/run/workflow/{workflowId}
-                    const url = `${RUNNINGHUB_BASE_URL}/openapi/v2/run/workflow/${workflowId}`;
+                    // RunningHub v2 API 官方文档：https://www.runninghub.cn/openapi/v2/run/ai-app/{id}
+                    // 注意：AI 应用用 /ai-app/{id}，ComfyUI 工作流用 /workflow/{id}
+                    const url = `${RUNNINGHUB_BASE_URL}/openapi/v2/run/ai-app/${workflowId}`;
                     const payload = {
                         addMetadata: true,
                         nodeInfoList: nodeInfoList,
@@ -5871,19 +5872,22 @@ You must design a visual composition that tells the story through **8 distinct p
                             }
 
                             // 构建 nodeInfoList
-                            // v2 API 需要完整 URL 而不是文件名
+                            // v2 API AI App 传文件名（不是完整 URL）
+                            // 注意：不同的 AI App 节点 ID 不同，需要根据实际工作流调整
+                            // 根据文档示例：nodeId 12=图片1, 17=图片2, 18=图片3, 15=prompt
+                            const imageNodeIds = ['12', '17', '18', '16'];
                             uploadedFiles.forEach((file, idx) => {
                                 nodeInfoList.push({
-                                    nodeId: String(10 + idx),
+                                    nodeId: imageNodeIds[idx] || String(10 + idx),
                                     fieldName: 'image',
-                                    fieldValue: file.url  // v2 需要完整 URL
+                                    fieldValue: file.fileName  // v2 AI App 传文件名
                                 });
                             });
 
                             // 如果有 prompt，添加到节点参数中
                             if (prompt) {
                                 nodeInfoList.push({
-                                    nodeId: '11',
+                                    nodeId: '15',
                                     fieldName: 'prompt',
                                     fieldValue: prompt
                                 });
@@ -5892,7 +5896,7 @@ You must design a visual composition that tells the story through **8 distinct p
                             // 添加其他参数（ratio, resolution 等）
                             if (ratio && ratio !== 'Auto') {
                                 nodeInfoList.push({
-                                    nodeId: '12',
+                                    nodeId: '15',
                                     fieldName: 'ratio',
                                     fieldValue: ratio
                                 });
@@ -6872,19 +6876,21 @@ You must design a visual composition that tells the story through **8 distinct p
                             }
 
                             // 构建 nodeInfoList
-                            // v2 API 需要完整 URL 而不是文件名
+                            // v2 API AI App 传文件名（不是完整 URL）
+                            // 根据文档示例：nodeId 12=图片1, 17=图片2, 18=图片3, 15=prompt
+                            const imageNodeIds = ['12', '17', '18', '16'];
                             uploadedFiles.forEach((file, idx) => {
                                 nodeInfoList.push({
-                                    nodeId: String(10 + idx),
+                                    nodeId: imageNodeIds[idx] || String(10 + idx),
                                     fieldName: 'image',
-                                    fieldValue: file.url  // v2 需要完整 URL
+                                    fieldValue: file.fileName  // v2 AI App 传文件名
                                 });
                             });
 
                             // 如果有 prompt，添加到节点参数中
                             if (prompt) {
                                 nodeInfoList.push({
-                                    nodeId: '11',
+                                    nodeId: '15',
                                     fieldName: 'prompt',
                                     fieldValue: prompt
                                 });
@@ -6893,7 +6899,7 @@ You must design a visual composition that tells the story through **8 distinct p
                             // 添加其他参数（ratio, resolution 等）
                             if (ratio && ratio !== 'Auto') {
                                 nodeInfoList.push({
-                                    nodeId: '12',
+                                    nodeId: '15',
                                     fieldName: 'ratio',
                                     fieldValue: ratio
                                 });
