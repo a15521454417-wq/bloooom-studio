@@ -4589,7 +4589,13 @@ You must design a visual composition that tells the story through **8 distinct p
                     const url = `${RUNNINGHUB_BASE_URL}/openapi/v2/run/${endpoint}/${cleanWorkflowId}`;
                     console.log(`[RunningHub] 原始 workflowId: ${workflowId} → 清理后: ${cleanWorkflowId}`);
                     
-                    const payload = {
+                    const payload = isAIApp ? {
+                        // AI App 格式：不带 addMetadata，usePersonalQueue 是字符串
+                        nodeInfoList: nodeInfoList,
+                        instanceType: 'default',
+                        usePersonalQueue: 'false'
+                    } : {
+                        // ComfyUI 工作流格式
                         addMetadata: true,
                         nodeInfoList: nodeInfoList,
                         instanceType: 'default',
