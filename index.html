@@ -4387,14 +4387,15 @@ You must design a visual composition that tells the story through **8 distinct p
                     return;
                 }
 
-                const statusEndpoint = `${RUNNINGHUB_BASE_URL}/api/task/${taskId}/status`;
-
+                // RunningHub 正确轮询接口：POST /openapi/v2/query
                 try {
-                    const resp = await fetch(statusEndpoint, {
-                        method: 'GET',
+                    const resp = await fetch(`${RUNNINGHUB_BASE_URL}/openapi/v2/query`, {
+                        method: 'POST',
                         headers: {
-                            'Authorization': `Bearer ${runninghubApiKey}`
-                        }
+                            'Authorization': `Bearer ${runninghubApiKey}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ taskId })
                     });
 
                     if (!resp.ok) {
@@ -4404,38 +4405,19 @@ You must design a visual composition that tells the story through **8 distinct p
                     const data = await resp.json();
                     console.log('[Tapnow] RunningHub Poll:', data);
 
-                    const status = data?.data?.status || data?.status || '';
-                    const resultData = data?.data || data;
+                    // 正确响应格式：{ taskId, status, results: [{ url, nodeId, outputType, ... }], ... }
+                    const status = data.status || '';
+                    const results = data.results || [];
 
                     // 成功状态
                     if (status === 'SUCCESS' || status === 'success' || status === 'COMPLETED' || status === 'completed') {
-                        // 尝试从结果中提取图片或视频URL
+                        // 从 results 数组中提取第一个有效 URL
                         let outputUrl = '';
 
-                        // 尝试多种可能的输出字段
-                        const possibleFields = [
-                            'output', 'output_url', 'outputUrl', 'url',
-                            'image', 'image_url', 'imageUrl', 'video', 'video_url', 'videoUrl',
-                            'data.output', 'data.url', 'data.image', 'data.video'
-                        ];
-
-                        for (const field of possibleFields) {
-                            if (field.includes('.')) {
-                                const parts = field.split('.');
-                                let value = resultData;
-                                for (const part of parts) {
-                                    value = value?.[part];
-                                }
-                                if (value && typeof value === 'string' && (value.startsWith('http') || value.startsWith('data:'))) {
-                                    outputUrl = value;
-                                    break;
-                                }
-                            } else {
-                                const value = resultData?.[field];
-                                if (value && typeof value === 'string' && (value.startsWith('http') || value.startsWith('data:'))) {
-                                    outputUrl = value;
-                                    break;
-                                }
+                        for (const result of results) {
+                            if (result.url && (result.url.startsWith('http') || result.url.startsWith('data:'))) {
+                                outputUrl = result.url;
+                                break;
                             }
                         }
 
@@ -4546,7 +4528,8 @@ You must design a visual composition that tells the story through **8 distinct p
                     const fileName = `upload_${Date.now()}.${extension}`;
                     formData.append('file', blob, fileName);
 
-                    const resp = await fetch(`${RUNNINGHUB_BASE_URL}/api/upload`, {
+                    // RunningHub 正确上传接口：/openapi/v2/media/upload/binary
+                    const resp = await fetch(`${RUNNINGHUB_BASE_URL}/openapi/v2/media/upload/binary`, {
                         method: 'POST',
                         headers: {
                             'Authorization': `Bearer ${runninghubApiKey}`
@@ -4561,10 +4544,13 @@ You must design a visual composition that tells the story through **8 distinct p
                     const data = await resp.json();
                     console.log('[Tapnow] RunningHub Upload:', data);
 
-                    if (data.code === 0 && data.data?.fileName) {
-                        return data.data.fileName; // 返回 api/uploaded_image.jpg 格式的文件名
+                    // 正确响应格式：{ code: 0, data: { download_url, fileName, ... } }
+                    if (data.code === 0 && data.data?.download_url) {
+                        return data.data.download_url; // 返回完整的下载 URL
+                    } else if (data.code === 0 && data.data?.fileName) {
+                        return data.data.fileName;
                     } else {
-                        throw new Error(data.msg || data.message || '上传失败');
+                        throw new Error(data.message || data.msg || '上传失败');
                     }
                 } catch (err) {
                     console.error('[Tapnow] RunningHub Upload Error:', err);
@@ -4575,17 +4561,21 @@ You must design a visual composition that tells the story through **8 distinct p
             // ===== RunningHub 启动工作流函数 =====
             const runRunningHubWorkflow = async (workflowId, nodeInfoList, taskId, sourceNodeId, w, h, isVideoWorkflow = false) => {
                 try {
+                    // RunningHub 正确接口格式：/openapi/v2/run/workflow/{workflowId}
+                    // 正确 Body 格式：{ addMetadata, nodeInfoList, instanceType, usePersonalQueue, webhookUrl }
                     const payload = {
-                        workflowId: workflowId,
-                        nodeInfoList: nodeInfoList
+                        addMetadata: true,
+                        nodeInfoList: nodeInfoList,
+                        instanceType: 'default',
+                        usePersonalQueue: 'false'
                     };
 
                     // 如果有 webhook URL，添加到 payload
                     if (runninghubWebhook) {
-                        payload.webhook = runninghubWebhook;
+                        payload.webhookUrl = runninghubWebhook;
                     }
 
-                    const resp = await fetch(`${RUNNINGHUB_BASE_URL}/api/comfyui/task/run`, {
+                    const resp = await fetch(`${RUNNINGHUB_BASE_URL}/openapi/v2/run/workflow/${workflowId}`, {
                         method: 'POST',
                         headers: {
                             'Authorization': `Bearer ${runninghubApiKey}`,
@@ -4601,8 +4591,9 @@ You must design a visual composition that tells the story through **8 distinct p
                     const data = await resp.json();
                     console.log('[Tapnow] RunningHub Run Workflow:', data);
 
-                    if (data.code === 0 && data.data?.taskId) {
-                        const remoteTaskId = data.data.taskId;
+                    // 正确响应格式：{ taskId, status, results, ... }（不在 data 字段里）
+                    if (data.taskId) {
+                        const remoteTaskId = data.taskId;
                         // 更新历史记录中的远程任务ID
                         setHistory((prev) => prev.map((hItem) =>
                             hItem.id === taskId
@@ -4612,7 +4603,7 @@ You must design a visual composition that tells the story through **8 distinct p
                         // 开始轮询，传入视频标记
                         pollRunningHubJob(remoteTaskId, workflowId, nodeInfoList, sourceNodeId, w, h, 0, isVideoWorkflow);
                     } else {
-                        throw new Error(data.msg || data.message || '启动工作流失败');
+                        throw new Error(data.errorMessage || data.message || '启动工作流失败');
                     }
                 } catch (err) {
                     console.error('[Tapnow] RunningHub Run Workflow Error:', err);
@@ -5874,7 +5865,7 @@ You must design a visual composition that tells the story through **8 distinct p
                                 nodeInfoList.push({
                                     nodeId: String(10 + idx), // 默认从节点10开始，你可以通过 prompt 中的特殊标记来指定
                                     fieldName: 'image',
-                                    fieldValue: file.fileName
+                                    value: file.fileName  // 使用 value 而非 fieldValue
                                 });
                             });
 
@@ -5883,7 +5874,7 @@ You must design a visual composition that tells the story through **8 distinct p
                                 nodeInfoList.push({
                                     nodeId: '11', // 假设提示词节点是 11
                                     fieldName: 'prompt',
-                                    fieldValue: prompt
+                                    value: prompt
                                 });
                             }
 
@@ -5892,7 +5883,7 @@ You must design a visual composition that tells the story through **8 distinct p
                                 nodeInfoList.push({
                                     nodeId: '12',
                                     fieldName: 'ratio',
-                                    fieldValue: ratio
+                                    value: ratio
                                 });
                             }
 
@@ -6872,7 +6863,7 @@ You must design a visual composition that tells the story through **8 distinct p
                                 nodeInfoList.push({
                                     nodeId: String(10 + idx),
                                     fieldName: 'image',
-                                    fieldValue: file.fileName
+                                    value: file.fileName  // 使用 value 而非 fieldValue
                                 });
                             });
 
@@ -6881,7 +6872,7 @@ You must design a visual composition that tells the story through **8 distinct p
                                 nodeInfoList.push({
                                     nodeId: '11',
                                     fieldName: 'prompt',
-                                    fieldValue: prompt
+                                    value: prompt
                                 });
                             }
 
@@ -6890,7 +6881,7 @@ You must design a visual composition that tells the story through **8 distinct p
                                 nodeInfoList.push({
                                     nodeId: '12',
                                     fieldName: 'ratio',
-                                    fieldValue: ratio
+                                    value: ratio
                                 });
                             }
 
