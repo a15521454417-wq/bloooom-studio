@@ -4545,10 +4545,10 @@ You must design a visual composition that tells the story through **8 distinct p
                     console.log('[Tapnow] RunningHub Upload:', data);
 
                     // 正确响应格式：{ code: 0, data: { download_url, fileName, ... } }
-                    if (data.code === 0 && data.data?.download_url) {
-                        return data.data.download_url; // 返回完整的下载 URL
-                    } else if (data.code === 0 && data.data?.fileName) {
-                        return data.data.fileName;
+                    if (data.code === 0 && data.data?.fileName) {
+                        return data.data.fileName; // 返回 openapi/xxxx.png 格式，用于工作流引用
+                    } else if (data.code === 0 && data.data?.download_url) {
+                        return data.data.download_url; // 备选：完整的下载 URL
                     } else {
                         throw new Error(data.message || data.msg || '上传失败');
                     }
@@ -4585,11 +4585,14 @@ You must design a visual composition that tells the story through **8 distinct p
                     });
 
                     if (!resp.ok) {
+                        const errText = await resp.text();
+                        console.error('[Tapnow] RunningHub Run Workflow HTTP Error:', resp.status, errText);
                         throw new Error(`启动工作流失败: HTTP ${resp.status}`);
                     }
 
                     const data = await resp.json();
-                    console.log('[Tapnow] RunningHub Run Workflow:', data);
+                    console.log('[Tapnow] RunningHub Run Workflow Request:', JSON.stringify(payload, null, 2));
+                    console.log('[Tapnow] RunningHub Run Workflow Response:', JSON.stringify(data, null, 2));
 
                     // 正确响应格式：{ taskId, status, results, ... }（不在 data 字段里）
                     if (data.taskId) {
@@ -4603,7 +4606,9 @@ You must design a visual composition that tells the story through **8 distinct p
                         // 开始轮询，传入视频标记
                         pollRunningHubJob(remoteTaskId, workflowId, nodeInfoList, sourceNodeId, w, h, 0, isVideoWorkflow);
                     } else {
-                        throw new Error(data.errorMessage || data.message || '启动工作流失败');
+                        // 打印完整的响应以便调试
+                        console.error('[Tapnow] RunningHub Error Response:', JSON.stringify(data, null, 2));
+                        throw new Error(data.errorMessage || data.message || data.msg || '启动工作流失败');
                     }
                 } catch (err) {
                     console.error('[Tapnow] RunningHub Run Workflow Error:', err);
