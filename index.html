@@ -13982,16 +13982,12 @@ You must design a visual composition that tells the story through **8 distinct p
                                                             </label>
                                                         );
                                                     })()}
-                                                    {/* ★ RunningHub AI App 功能开关（仅 runninghub-video + WebApp 模式显示） */}
+                                                    {/* ★ RunningHub AI App 功能开关（runninghub-video 模型始终显示） */}
                                                     {node.type === 'gen-video' && (() => {
                                                         const currentModel = node.settings?.model || '';
                                                         const modelConfig = apiConfigsMap.get(currentModel);
                                                         const isRHVideo = currentModel === 'runninghub-video' || modelConfig?.isRunningHub;
                                                         if (!isRHVideo) return null;
-                                                        // 检测是否为 WebApp 模式（16~19位数字 ID）
-                                                        const wid = node.settings?.runninghubWorkflowId || '';
-                                                        const isWebApp = /^\d{16,19}$/.test(wid);
-                                                        if (!isWebApp) return null;
                                                         
                                                         return <>
                                                             {/* 真人模式开关 */}
