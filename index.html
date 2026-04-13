@@ -4514,21 +4514,16 @@ You must design a visual composition that tells the story through **8 distinct p
                 try {
                     let blob;
                     if (imageData.startsWith('data:')) {
-                        // Data URL 转换为 Blob
                         const response = await fetch(imageData);
                         blob = await response.blob();
                     } else if (imageData.startsWith('http') || imageData.startsWith('https')) {
-                        // URL 下载后上传
                         const response = await fetch(imageData);
                         blob = await response.blob();
                     } else {
                         throw new Error('不支持的图片数据格式');
                     }
 
-                    // RunningHub v2 API 上传接口：POST /openapi/v2/media/upload/binary
-                    // 需要直接传文件二进制，用 FormData 格式
                     const formData = new FormData();
-                    // 根据blob类型生成文件名
                     const mimeType = blob.type || 'image/png';
                     const extension = mimeType.split('/')[1] || 'png';
                     const fileName = `upload_${Date.now()}.${extension}`;
@@ -4536,29 +4531,21 @@ You must design a visual composition that tells the story through **8 distinct p
 
                     const resp = await fetch(`${RUNNINGHUB_BASE_URL}/openapi/v2/media/upload/binary`, {
                         method: 'POST',
-                        headers: {
-                            'Authorization': `Bearer ${runninghubApiKey}`
-                            // 注意：不设置 Content-Type，让浏览器自动设置 multipart/form-data
-                        },
+                        headers: { 'Authorization': `Bearer ${runninghubApiKey}` },
                         body: formData
                     });
 
-                    if (!resp.ok) {
-                        throw new Error(`上传失败: HTTP ${resp.status}`);
-                    }
+                    if (!resp.ok) throw new Error(`上传失败: HTTP ${resp.status}`);
 
                     const data = await resp.json();
                     console.log('[Tapnow] RunningHub v2 Upload:', data);
 
-                    // v2 API 返回格式：{ code: 0, message: 'success', data: { fileName: 'openapi/xxx.png', download_url: '...' } }
                     if (data.code === 0 && data.data) {
-                        // 返回文件名（v2 API nodeInfoList 只需要文件名，不需要完整 URL）
-                        // pureFileName: 纯文件名（不含路径前缀），用于 AI App
                         const fullFileName = data.data.fileName;
-                        const pureFileName = fullFileName.split('/').pop(); // 去掉 openapi/ 前缀
+                        const pureFileName = fullFileName.split('/').pop();
                         return {
-                            fileName: fullFileName,      // 带路径：openapi/xxx.png（ComfyUI用）
-                            pureFileName: pureFileName,  // 纯文件名：xxx.png（AI App用）
+                            fileName: fullFileName,
+                            pureFileName: pureFileName,
                             url: data.data.download_url || data.data.url || `https://www.runninghub.cn/${fullFileName}`
                         };
                     } else {
@@ -4566,6 +4553,85 @@ You must design a visual composition that tells the story through **8 distinct p
                     }
                 } catch (err) {
                     console.error('[Tapnow] RunningHub v2 Upload Error:', err);
+                    throw err;
+                }
+            };
+
+            // ===== RunningHub Task API 文件上传 =====
+            // 使用 /task/openapi/upload 端点（Task API 专用）
+            const uploadToRunningHubTask = async (imageData, fileType = 'image') => {
+                try {
+                    let blob;
+                    if (imageData.startsWith('data:')) {
+                        const response = await fetch(imageData);
+                        blob = await response.blob();
+                    } else if (imageData.startsWith('http') || imageData.startsWith('https')) {
+                        const response = await fetch(imageData);
+                        blob = await response.blob();
+                    } else {
+                        throw new Error('不支持的图片数据格式');
+                    }
+
+                    const formData = new FormData();
+                    const mimeType = blob.type || (fileType === 'image' ? 'image/png' : fileType === 'video' ? 'video/mp4' : 'audio/mpeg');
+                    const extMap = { image: ['png', 'jpg', 'jpeg', 'webp'], video: ['mp4', 'mov'], audio: ['mp3', 'wav'] };
+                    const extension = mimeType.split('/')[1] || (extMap[fileType]?.[0] || 'bin');
+                    const uploadName = `upload_${Date.now()}.${extension}`;
+                    formData.append('file', blob, uploadName);
+                    formData.append('fileType', fileType);
+                    formData.append('apiKey', runninghubApiKey);
+
+                    console.log(`[RunningHub Task API] 上传文件 (${fileType}):`, { size: blob.size, type: mimeType });
+
+                    const resp = await fetch(`${RUNNINGHUB_BASE_URL}/task/openapi/upload`, {
+                        method: 'POST',
+                        headers: { 'Host': 'www.runninghub.cn' },
+                        body: formData
+                    });
+
+                    if (!resp.ok) {
+                        const errText = await resp.text();
+                        console.error(`[RunningHub Task API] 上传失败: ${resp.status}`, errText);
+                        throw new Error(`上传失败: HTTP ${resp.status}`);
+                    }
+
+                    const data = await resp.json();
+                    console.log(`[RunningHub Task API] 上传结果:`, data);
+
+                    if (data.code === 0 && data.data?.fileName) {
+                        return {
+                            fileName: data.data.fileName,
+                            url: data.data.downloadUrl || data.data.url || ''
+                        };
+                    } else {
+                        throw new Error(data.msg || data.message || '上传失败');
+                    }
+                } catch (err) {
+                    console.error('[RunningHub Task API] Upload Error:', err);
+                    throw err;
+                }
+            };
+
+            // ===== 获取 AI 应用节点信息 =====
+            // 使用 /api/webapp/apiCallDemo 端点获取节点列表和字段定义
+            const getRunningHubAppNodes = async (webAppId) => {
+                try {
+                    const url = `${RUNNINGHUB_BASE_URL}/api/webapp/apiCallDemo?apiKey=${runninghubApiKey}&webappId=${webAppId}`;
+                    console.log(`[RunningHub App Nodes] 获取节点信息: ${url.substring(0, 80)}...`);
+
+                    const resp = await fetch(url, { method: 'GET' });
+                    if (!resp.ok) throw new Error(`获取节点信息失败: HTTP ${resp.status}`);
+
+                    const data = await resp.json();
+                    console.log(`[RunningHub App Nodes] 结果:`, data);
+
+                    if (data.code === 0 && data.data?.nodeInfoList) {
+                        return data.data.nodeInfoList; // 返回完整的节点信息数组
+                    } else {
+                        throw new Error(data.msg || data.message || '获取节点信息失败');
+                    }
+                } catch (err) {
+                    console.error('[RunningHub App Nodes] Error:', err);
                     throw err;
                 }
             };
@@ -4646,6 +4712,152 @@ You must design a visual composition that tells the story through **8 distinct p
                             ? { ...hItem, status: 'failed', errorMsg: err.message || 'RunningHub 工作流启动失败' }
                             : hItem
                     ));
+                }
+            };
+
+            // ===== RunningHub AI App Task API（新接口） =====
+            // 使用 /task/openapi/ai-app/run 提交任务，/task/openapi/outputs 查询结果
+            const runRunningHubTask = async (webAppId, nodeInfoList, taskId, sourceNodeId, w, h, isVideoWorkflow = false) => {
+                try {
+                    // ★ Task API 端点：POST /task/openapi/ai-app/run
+                    // 认证方式：Body 里传 webappId + apiKey
+                    const url = `${RUNNINGHUB_BASE_URL}/task/openapi/ai-app/run`;
+                    
+                    const payload = {
+                        webappId: webAppId,
+                        apiKey: runninghubApiKey,
+                        nodeInfoList: nodeInfoList
+                    };
+
+                    console.log(`[RunningHub Task API] URL: ${url}`);
+                    console.log(`[RunningHub Task API] WebAppId: ${webAppId}`);
+                    console.log(`[RunningHub Task API] Request:`, JSON.stringify(payload, null, 2));
+
+                    const resp = await fetch(url, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Host': 'www.runninghub.cn'
+                        },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!resp.ok) {
+                        const errText = await resp.text();
+                        console.error('[RunningHub Task API] HTTP Error:', resp.status, errText);
+                        throw new Error(`任务提交失败: HTTP ${resp.status} - ${errText.substring(0, 200)}`);
+                    }
+
+                    const data = await resp.json();
+                    console.log(`[RunningHub Task API] Response:`, JSON.stringify(data, null, 2));
+
+                    // 返回格式：{ code: 0, data: { taskId: "xxx" } }
+                    if (data.code === 0 && data.data?.taskId) {
+                        const remoteTaskId = data.data.taskId;
+                        console.log(`[RunningHub Task API] 任务提交成功! taskId: ${remoteTaskId}`);
+
+                        setHistory((prev) => prev.map((hItem) =>
+                            hItem.id === taskId
+                                ? { ...hItem, remoteTaskId, errorMsg: '排队中' }
+                                : hItem
+                        ));
+
+                        // 开始轮询（使用 Task API 的查询接口）
+                        pollRunningHubTaskJob(remoteTaskId, webAppId, taskId, sourceNodeId, w, h, 0, isVideoWorkflow);
+                    } else {
+                        console.error('[RunningHub Task API] Error Response:', JSON.stringify(data, null, 2));
+                        throw new Error(data.msg || data.message || data.errorCode || '任务提交失败');
+                    }
+                } catch (err) {
+                    console.error('[RunningHub Task API] Run Error:', err);
+                    setHistory((prev) => prev.map((hItem) =>
+                        hItem.id === taskId
+                            ? { ...hItem, status: 'failed', errorMsg: err.message || 'AI App Task 启动失败' }
+                            : hItem
+                    ));
+                }
+            };
+
+            // ===== RunningHub Task API 轮询查询 =====
+            const pollRunningHubTaskJob = async (remoteTaskId, webAppId, localTaskId, sourceNodeId, w, h, attempt = 0, isVideoWorkflow = false) => {
+                const maxAttempts = 300; // 最多轮询 25 分钟
+                if (attempt >= maxAttempts) {
+                    console.warn('[RunningHub Task API] 轮询超时');
+                    setHistory(prev => prev.map(h => h.id === localTaskId ? { ...h, status: 'failed', errorMsg: '轮询超时(25分钟)' } : h));
+                    return;
+                }
+
+                try {
+                    const url = `${RUNNINGHUB_BASE_URL}/task/openapi/outputs`;
+                    const payload = { apiKey: runninghubApiKey, taskId: remoteTaskId };
+
+                    const resp = await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Host': 'www.runninghub.cn' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!resp.ok) {
+                        console.warn(`[RunningHub Task API] Poll HTTP ${resp.status}, 重试...`);
+                        setTimeout(() => pollRunningHubTaskJob(remoteTaskId, webAppId, localTaskId, sourceNodeId, w, h, attempt + 1, isVideoWorkflow), 5000);
+                        return;
+                    }
+
+                    const data = await resp.json();
+                    const code = data.code;
+                    const resultData = data.data;
+
+                    // code=0 且有数据 → 成功
+                    if (code === 0 && resultData && Array.isArray(resultData) && resultData.length > 0) {
+                        console.log(`[RunningHub Task API] ✅ 生成成功! 结果:`, resultData);
+                        
+                        const files = resultData;
+                        const primaryUrl = files[0]?.fileUrl || '';
+                        const outputType = files[0]?.fileType || (isVideoWorkflow ? 'mp4' : 'png');
+
+                        setHistory(prev => prev.map(h => {
+                            if (h.id !== localTaskId) return h;
+                            const updated = { ...h, status: 'completed', progress: 100, url: primaryUrl, width: w, height: h };
+                            return updated;
+                        }));
+
+                        // 更新预览窗口
+                        if (primaryUrl && sourceNodeId) {
+                            setTimeout(() => updatePreviewFromTask(localTaskId, primaryUrl, isVideoWorkflow ? 'video' : 'image', sourceNodeId), 0);
+                        }
+                        return;
+                    }
+
+                    // code=804 → 运行中, code=813 → 排队中
+                    if (code === 804 || code === 813) {
+                        const statusText = code === 804 ? '运行中' : '排队中';
+                        const elapsed = attempt * 5;
+                        if (attempt % 10 === 0) { // 每50秒更新一次状态
+                            setHistory(prev => prev.map(h => h.id === localTaskId ? { ...h, errorMsg: `${statusText} (${elapsed}s)` } : h));
+                        }
+                        setTimeout(() => pollRunningHubTaskJob(remoteTaskId, webAppId, localTaskId, sourceNodeId, w, h, attempt + 1, isVideoWorkflow), 5000);
+                        return;
+                    }
+
+                    // code=805 → 失败
+                    if (code === 805) {
+                        const failReason = typeof resultData === 'object' ? JSON.stringify(resultData).substring(0, 300) : String(resultData);
+                        console.error(`[RunningHub Task API] ❌ 任务失败! 原因:`, failReason);
+                        setHistory(prev => prev.map(h => h.id === localTaskId ? { ...h, status: 'failed', errorMsg: `生成失败: ${failReason}` } : h));
+                        return;
+                    }
+
+                    // 其他未知状态
+                    console.warn(`[RunningHub Task API] 未知状态 code=${code}:`, JSON.stringify(data).substring(0, 200));
+                    setTimeout(() => pollRunningHubTaskJob(remoteTaskId, webAppId, localTaskId, sourceNodeId, w, h, attempt + 1, isVideoWorkflow), 5000);
+
+                } catch (err) {
+                    console.error('[RunningHub Task API] Poll Error:', err);
+                    if (attempt < maxAttempts - 5) {
+                        setTimeout(() => pollRunningHubTaskJob(remoteTaskId, webAppId, localTaskId, sourceNodeId, w, h, attempt + 1, isVideoWorkflow), 5000);
+                    } else {
+                        setHistory(prev => prev.map(h => h.id === localTaskId ? { ...h, status: 'failed', errorMsg: `轮询失败: ${err.message}` } : h));
+                    }
                 }
             };
 
@@ -7088,216 +7300,171 @@ You must design a visual composition that tells the story through **8 distinct p
                     if (type === 'video') {
                         // ★ RunningHub 视频工作流（需要在其他视频 API 之前检查）
                         const isRunningHubVideo = modelId === 'runninghub-video' || config?.isRunningHub === true;
-                        // ★ 使用 ComfyUI 工作流模式（自动发现节点，更稳定）
-                        const isAIAppVideo = false;
                         
                         if (isRunningHubVideo) {
-                            // 获取节点设置中的 Workflow ID（优先使用节点独立的设置）
+                            // 获取配置（支持 WebAppId 或 Workflow ID）
                             const nodeWorkflowId = node?.settings?.runninghubWorkflowId;
                             const effectiveWorkflowId = nodeWorkflowId || runninghubWorkflowId;
 
                             // 检查是否配置了 RunningHub
-                            if (!runninghubApiKey) {
-                                throw new Error('请先在设置中配置 RunningHub API Key');
-                            }
+                            if (!runninghubApiKey) throw new Error('请先在设置中配置 RunningHub API Key');
                             if (!effectiveWorkflowId) {
-                                if (nodeWorkflowId === undefined && !runninghubWorkflowId) {
-                                    throw new Error('请在设置中配置 RunningHub Workflow ID');
-                                } else {
-                                    throw new Error('请在该节点设置中配置 RunningHub Workflow ID');
-                                }
+                                if (nodeWorkflowId === undefined && !runninghubWorkflowId) throw new Error('请在设置中配置 RunningHub WebAppId / Workflow ID');
+                                else throw new Error('请在该节点设置中配置 RunningHub WebAppId / Workflow ID');
                             }
 
-                            // 准备节点参数列表
-                            const nodeInfoList = [];
+                            console.log(`[RunningHub Video] 配置ID: ${effectiveWorkflowId}`);
 
-                            // 如果有参考图，先上传到 RunningHub
-                            const allImages = [...connectedImages];
-                            if (sourceImage && !allImages.includes(sourceImage)) {
-                                allImages.push(sourceImage);
-                            }
+                            // ===== 判断是 WebApp 模式还是 Workflow 模式 =====
+                            // WebAppId 通常是 16~19 位纯数字，如 1937084629516193794
+                            // Workflow ID 格式如 2037044109663281154
+                            const isWebAppMode = /^\d{16,19}$/.test(effectiveWorkflowId);
 
-                            // 上传所有图片并构建 nodeInfoList
-                            const uploadedFiles = [];
-                            for (let i = 0; i < allImages.length; i++) {
+                            if (isWebAppMode) {
+                                // ===== ★ Task API 模式（新接口）=====
+                                console.log(`[RunningHub Task API] 使用 WebApp 模式, WebAppId: ${effectiveWorkflowId}`);
+                                
+                                // 1. 获取 AI 应用节点信息
+                                let appNodes = [];
                                 try {
-                                    // v2 API 返回 { fileName, url, pureFileName }
-                                    const uploadResult = await uploadToRunningHub(allImages[i]);
-                                    uploadedFiles.push({
-                                        index: i,
-                                        fileName: uploadResult.fileName,        // openapi/xxx.png
-                                        pureFileName: uploadResult.pureFileName, // xxx.png
-                                        url: uploadResult.url,
-                                        originalUrl: allImages[i]
-                                    });
-                                    console.log(`[RunningHub v2 Video] 图片 ${i + 1} 上传成功:`, uploadResult);
-                                } catch (uploadErr) {
-                                    console.error(`[RunningHub v2 Video] 图片 ${i + 1} 上传失败:`, uploadErr);
-                                    throw new Error(`图片上传失败: ${uploadErr.message}`);
+                                    appNodes = await getRunningHubAppNodes(effectiveWorkflowId);
+                                    console.log(`[RunningHub Task API] 获取到 ${appNodes.length} 个节点`);
+                                    appNodes.forEach(n => console.log(`  → [${n.nodeId}] ${n.nodeName} / ${n.fieldName} (${n.fieldType})`));
+                                } catch (nodeErr) {
+                                    console.warn(`[RunningHub Task API] 获取节点信息失败: ${nodeErr.message}，将使用默认参数`);
                                 }
-                            }
 
-                            if (isAIAppVideo) {
-                                // ===== AI App 模式（完全按照文档示例格式）=====
-                                console.log(`[AI App Video] Workflow ID: ${effectiveWorkflowId}`);
-                                console.log(`[AI App Video] 上传图片数: ${uploadedFiles.length} 张`);
+                                // 2. 准备图片上传和 nodeInfoList
+                                const nodeInfoList = [];
+                                const allImages = [...connectedImages];
+                                if (sourceImage && !allImages.includes(sourceImage)) allImages.push(sourceImage);
+
+                                // 找出所有 IMAGE 类型的节点
+                                const imageInputNodes = appNodes.filter(n => n.fieldType === 'IMAGE');
+                                const stringInputNodes = appNodes.filter(n => n.fieldType === 'STRING' || n.fieldType === 'LIST');
                                 
-                                // 图片节点：根据用户上传数量动态分配到 nodeId 2, 9, 10（循环使用）
-                                const imageNodeIds = ['2', '9', '10'];
-                                uploadedFiles.forEach((file, idx) => {
-                                    const targetNodeId = imageNodeIds[idx % imageNodeIds.length];
-                                    nodeInfoList.push({
-                                        nodeId: targetNodeId,
-                                        fieldName: 'image',
-                                        fieldValue: file.pureFileName,
-                                        description: `上传图像${idx + 1}（选填）`
-                                    });
-                                    console.log(`[AI App Video] 图${idx + 1} → 节点 ${targetNodeId}: ${file.pureFileName}`);
-                                });
+                                // 上传图片并分配到对应节点
+                                if (allImages.length > 0 && imageInputNodes.length > 0) {
+                                    for (let i = 0; i < allImages.length; i++) {
+                                        try {
+                                            // 使用 Task API 的上传接口
+                                            const uploadResult = await uploadToRunningHubTask(allImages[i], 'image');
+                                            
+                                            // 循环分配到 IMAGE 类型节点（按文档示例格式）
+                                            const targetNode = imageInputNodes[i % imageInputNodes.length];
+                                            nodeInfoList.push({
+                                                nodeId: targetNode.nodeId,
+                                                fieldName: targetNode.fieldName,
+                                                fieldValue: uploadResult.fileName,
+                                                description: targetNode.description || ''
+                                            });
+                                            // LIST 类型需要 fieldData
+                                            if (targetNode.fieldType === 'LIST' && targetNode.fieldData) {
+                                                nodeInfoList[nodeInfoList.length - 1].fieldData = targetNode.fieldData;
+                                            }
+                                            console.log(`[RunningHub Task API] 图片${i+1} → 节点[${targetNode.nodeId}].${targetNode.fieldName}: ${uploadResult.fileName}`);
+                                        } catch (uploadErr) {
+                                            console.error(`[RunningHub Task API] 图片${i+1} 上传失败:`, uploadErr);
+                                        }
+                                    }
+                                } else if (allImages.length > 0) {
+                                    console.warn(`[RunningHub Task API] 无 IMAGE 类型输入节点，跳过 ${allImages.length} 张图`);
+                                }
 
-                                // ===== 参数节点 (nodeId: 1) 完全按文档 =====
-                                // real_person_mode
-                                nodeInfoList.push({
-                                    nodeId: '1',
-                                    fieldName: 'real_person_mode',
-                                    fieldValue: 'true',
-                                    description: '支持真人开关'
-                                });
-                                
-                                // duration
-                                let videoDuration = String(node?.settings?.duration || '5').replace(/s$/i, '');
-                                if (!/^\d+$/.test(videoDuration)) videoDuration = '5';
-                                
-                                // ratio：枚举值校验
-                                const RATIO_OPTS = ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16', '21:9'];
-                                let rawRatio = String(node?.settings?.ratio || 'adaptive');
-                                let videoRatio = RATIO_OPTS.includes(rawRatio) ? rawRatio : 'adaptive';
-                                if (videoRatio === 'Auto' || videoRatio === 'auto') videoRatio = 'adaptive';
-                                
-                                // resolution：枚举值校验
-                                const RES_OPTS = ['480p', '720p', '1080p', '2k', '4k'];
-                                let videoResolution = RES_OPTS.includes(String(node?.settings?.resolution)) ? String(node?.settings?.resolution) : '720p';
+                                // 处理 Prompt → STRING/LIST 节点
+                                if (prompt && stringInputNodes.length > 0) {
+                                    // 优先找 prompt 相关字段
+                                    let promptNode = stringInputNodes.find(n => 
+                                        n.fieldName.toLowerCase().includes('prompt') || 
+                                        n.nodeName.toLowerCase().includes('prompt') ||
+                                        n.description?.toLowerCase().includes('提示')
+                                    );
+                                    // 其次找 text 字段
+                                    if (!promptNode) promptNode = stringInputNodes.find(n => n.fieldName.toLowerCase().includes('text'));
+                                    // 再其次取第一个
+                                    if (!promptNode) promptNode = stringInputNodes[0];
 
-                                // duration + fieldData
-                                nodeInfoList.push({
-                                    nodeId: '1',
-                                    fieldName: 'duration',
-                                    fieldData: '[["4","5","6","7","8","9","10","11","12","13","14","15"], {"default":"5"}]',
-                                    fieldValue: videoDuration,
-                                    description: '时长（秒）'
-                                });
-
-                                // ratio + fieldData
-                                nodeInfoList.push({
-                                    nodeId: '1',
-                                    fieldName: 'ratio',
-                                    fieldData: '[["adaptive","16:9","4:3","1:1","3:4","9:16","21:9"], {"default":"adaptive"}]',
-                                    fieldValue: videoRatio,
-                                    description: '比例'
-                                });
-
-                                // resolution + fieldData
-                                nodeInfoList.push({
-                                    nodeId: '1',
-                                    fieldName: 'resolution',
-                                    fieldData: '[{"name":"480p","index":"480p"},{"name":"720p","index":"720p"},{"name":"1080p","index":"1080p"},{"name":"2k","index":"2k"},{"name":"4k","index":"4k"}]',
-                                    fieldValue: videoResolution,
-                                    description: '分辨率'
-                                });
-
-                                // prompt
-                                if (prompt) {
-                                    nodeInfoList.push({
-                                        nodeId: '1',
-                                        fieldName: 'prompt',
+                                    const entry = {
+                                        nodeId: promptNode.nodeId,
+                                        fieldName: promptNode.fieldName,
                                         fieldValue: prompt,
-                                        description: '输入文本'
-                                    });
-                                    console.log(`[AI App Video] Prompt 已添加 (${prompt.length} 字)`);
+                                        description: promptNode.description || ''
+                                    };
+                                    if (promptNode.fieldType === 'LIST' && promptNode.fieldData) {
+                                        entry.fieldData = promptNode.fieldData;
+                                    }
+                                    nodeInfoList.push(entry);
+                                    console.log(`[RunningHub Task API] Prompt → [${promptNode.nodeId}].${promptNode.fieldName} (${prompt.prompt?.length || 0}字)`);
                                 }
-                                
-                                console.log(`[AI App Video] 参数 → duration=${videoDuration}, ratio=${videoRatio}, res=${videoResolution}`);
-                                
+
+                                // 3. 提交任务
+                                console.log(`[RunningHub Task API] 最终 nodeInfoList:`, JSON.stringify(nodeInfoList, null, 2));
+                                await runRunningHubTask(effectiveWorkflowId, nodeInfoList, taskId, actualSourceNodeId, w, h, true);
+                                return;
+
                             } else {
-                                // ===== ComfyUI 工作流模式（自动发现节点）=====
-                                console.log(`[RunningHub Video] 开始获取工作流定义: ${effectiveWorkflowId}`);
-                                let workflowJson;
+                                // ===== ComfyUI 工作流模式（旧接口兼容）=====
+                                console.log(`[RunningHub Video] 使用 ComfyUI Workflow 模式: ${effectiveWorkflowId}`);
+                                
+                                const nodeInfoList = [];
+                                const allImages = [...connectedImages];
+                                if (sourceImage && !allImages.includes(sourceImage)) allImages.push(sourceImage);
+
+                                // 上传所有图片
+                                const uploadedFiles = [];
+                                for (let i = 0; i < allImages.length; i++) {
+                                    try {
+                                        const uploadResult = await uploadToRunningHub(allImages[i]);
+                                        uploadedFiles.push({ index: i, ...uploadResult });
+                                        console.log(`[RunningHub Video] 图片 ${i + 1} 上传成功:`, uploadResult);
+                                    } catch (uploadErr) {
+                                        throw new Error(`图片上传失败: ${uploadErr.message}`);
+                                    }
+                                }
+
+                                // 尝试自动发现节点
                                 let nodeMapping = { imageNodes: [], videoNodes: [], textNodes: [], paramNodes: [], openApiNodes: [] };
                                 try {
-                                    workflowJson = await getRunningHubWorkflowJson(effectiveWorkflowId);
+                                    const workflowJson = await getRunningHubWorkflowJson(effectiveWorkflowId);
                                     nodeMapping = discoverWorkflowNodes(workflowJson);
-                                    console.log(`[RunningHub Video] 工作流节点映射:`, {
-                                        imageNodes: nodeMapping.imageNodes,
-                                        textNodes: nodeMapping.textNodes,
-                                        openApiNodes: nodeMapping.openApiNodes.map(n => ({id:n.nodeId, type:n.classType}))
-                                    });
+                                    console.log(`[RunningHub Video] 工作流节点映射:`, nodeMapping);
                                 } catch (jsonErr) {
                                     console.warn(`[RunningHub Video] 获取工作流定义失败: ${jsonErr.message}`);
                                 }
 
-                                const imageNodes = nodeMapping.imageNodes || [];   // LoadImage 等节点
-                                const openApiNodes = nodeMapping.openApiNodes || []; // Seedance2.0 等主参数节点
+                                const imageNodes = nodeMapping.imageNodes || [];
+                                const openApiNodes = nodeMapping.openApiNodes || [];
 
-                                // ===== 图片处理 =====
+                                // 图片处理：优先 LoadImage，其次 OpenAPI 主节点
                                 if (uploadedFiles.length > 0 && imageNodes.length > 0) {
-                                    // 有 LoadImage 节点 → 循环分配（用 fileName）
-                                    uploadedFiles.forEach((file, idx) => {
-                                        const targetNode = imageNodes[idx % imageNodes.length];
-                                        nodeInfoList.push({
-                                            nodeId: targetNode.nodeId,
-                                            fieldName: 'image',
-                                            fieldValue: file.fileName  // openapi/xxx.png
-                                        });
-                                        console.log(`[RunningHub Video] 图片${idx + 1} → LoadImage#${targetNode.nodeId}.image`);
+                                    uploadedFiles.forEach((f, idx) => {
+                                        const tn = imageNodes[idx % imageNodes.length];
+                                        nodeInfoList.push({ nodeId: tn.nodeId, fieldName: 'image', fieldValue: f.fileName });
                                     });
                                 } else if (uploadedFiles.length > 0 && openApiNodes.length > 0) {
-                                    // 无 LoadImage 但有 OpenAPI 主参数节点 → 用 image1~imageN（用 pureFileName）
                                     const oa = openApiNodes[0];
                                     const imgFields = oa.imageFields || [];
-                                    if (imgFields.length > 0) {
-                                        uploadedFiles.forEach((file, idx) => {
-                                            if (idx < imgFields.length) {
-                                                nodeInfoList.push({ nodeId: oa.nodeId, fieldName: imgFields[idx], fieldValue: file.pureFileName });
-                                                console.log(`[RunningHub Video] 图片${idx + 1} → OpenAPI#${oa.nodeId}.${imgFields[idx]}: ${file.pureFileName}`);
-                                            }
-                                        });
-                                    } else {
-                                        console.warn(`[RunningHub Video] ⚠️ OpenAPI 节点无 image 字段，跳过 ${uploadedFiles.length} 张图`);
-                                    }
-                                } else if (uploadedFiles.length > 0) {
-                                    console.warn(`[RunningHub Video] ⚠️ 未发现任何图片输入节点，已跳过 ${uploadedFiles.length} 张图片`);
+                                    uploadedFiles.forEach((f, idx) => {
+                                        if (idx < imgFields.length) {
+                                            nodeInfoList.push({ nodeId: oa.nodeId, fieldName: imgFields[idx], fieldValue: f.pureFileName });
+                                        }
+                                    });
                                 }
 
-                                // ===== Prompt 处理 =====
+                                // Prompt 处理
                                 if (prompt) {
-                                    // 优先：OpenAPI 主节点的 prompt
-                                    if (openApiNodes.length > 0 && openApiNodes[0].hasPrompt) {
-                                        nodeInfoList.push({
-                                            nodeId: openApiNodes[0].nodeId,
-                                            fieldName: 'prompt',
-                                            fieldValue: prompt
-                                        });
-                                        console.log(`[RunningHub Video] Prompt → OpenAPI#${openApiNodes[0].nodeId}.prompt`);
-                                    }
-                                    // 其次：CLIPTextEncode 的 text
-                                    else if (nodeMapping.textNodes?.length > 0) {
+                                    if (openApiNodes.some(oa => oa.hasPrompt)) {
+                                        const oa = openApiNodes.find(oa => oa.hasPrompt);
+                                        nodeInfoList.push({ nodeId: oa.nodeId, fieldName: 'prompt', fieldValue: prompt });
+                                    } else if (nodeMapping.textNodes?.length > 0) {
                                         const tn = nodeMapping.textNodes[0];
-                                        nodeInfoList.push({
-                                            nodeId: tn.nodeId,
-                                            fieldName: tn.fieldName || 'text',
-                                            fieldValue: prompt
-                                        });
-                                        console.log(`[RunningHub Video] Prompt → 文本节点#${tn.nodeId}`);
-                                    } else {
-                                        console.warn(`[RunningHub Video] ⚠️ 未发现文本输入节点，Prompt 不传入`);
+                                        nodeInfoList.push({ nodeId: tn.nodeId, fieldName: tn.fieldName || 'text', fieldValue: prompt });
                                     }
                                 }
-                            }
 
-                            // ★ 启动工作流（ComfyUI 模式）
-                            console.log(`[RunningHub Video] 最终 nodeInfoList:`, JSON.stringify(nodeInfoList, null, 2));
-                            await runRunningHubWorkflow(effectiveWorkflowId, nodeInfoList, taskId, actualSourceNodeId, w, h, true, false);
-                            return;
+                                await runRunningHubWorkflow(effectiveWorkflowId, nodeInfoList, taskId, actualSourceNodeId, w, h, true, false);
+                                return;
+                            }
                         }
 
                         // Veo 3.x 图生视频：按 /v2/videos/generations 规范发送 JSON，使用 images 数组而不是 input_image
