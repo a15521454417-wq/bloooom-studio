@@ -1147,7 +1147,7 @@ You must design a visual composition that tells the story through **8 distinct p
                         {item.type === 'image' ? (
                             <img src={item.url} alt={item.prompt} className="max-w-full max-h-[85vh] rounded-lg shadow-2xl object-contain" />
                         ) : (
-                            <video src={item.url} controls autoPlay className="max-w-full max-h-[85vh] rounded-lg shadow-2xl" />
+                            <video src={item.url} controls autoPlay playsInline preload="auto" crossOrigin="anonymous" className="max-w-full max-h-[85vh] rounded-lg shadow-2xl" />
                         )}
                         <div className="absolute bottom-8 left-1/2 -translate-x-1/2 bg-black/60 backdrop-blur-md px-6 py-3 rounded-full text-white text-sm font-medium border border-white/10 text-center shadow-2xl">
                             <div className="line-clamp-1 max-w-xl">{item.prompt}</div>
@@ -11041,6 +11041,9 @@ You must design a visual composition that tells the story through **8 distinct p
                                                  <video 
                                                     src={node.content} 
                                                     controls 
+                                                    playsInline
+                                                    preload="auto"
+                                                    crossOrigin="anonymous"
                                                     className="w-full h-full object-contain bg-black/50" 
                                                     draggable={false}
                                                     style={{
@@ -12750,12 +12753,26 @@ You must design a visual composition that tells the story through **8 distinct p
                                         >
                                             {node.content || (node.previewMjImages && node.previewMjImages.length > 0) ? (
                                                 isVideoUrl(node.content) || node.previewType === 'video' ? (
-                                                    <video
-                                                        src={node.content}
-                                                        className="w-full h-full object-contain bg-black"
-                                                        controls
-                                                        draggable={false}
-                                                    />
+                                                    <div className="relative w-full h-full bg-black flex items-center justify-center">
+                                                        <video
+                                                            src={node.content}
+                                                            className="max-w-full max-h-full object-contain"
+                                                            controls
+                                                            playsInline
+                                                            preload="auto"
+                                                            crossOrigin="anonymous"
+                                                            draggable={false}
+                                                            onError={(e) => {
+                                                                console.error('[Preview] 视频加载失败:', { url: node.content, error: e });
+                                                                const vid = e.target;
+                                                                // 如果直接加载失败，尝试加时间戳参数绕过缓存/CORS
+                                                                if (!vid.src.includes('_retry=')) {
+                                                                    const sep = vid.src.includes('?') ? '&' : '?';
+                                                                    vid.src = vid.src + `${sep}_retry=1`;
+                                                                }
+                                                            }}
+                                                        />
+                                                    </div>
                                                 ) : node.previewMjImages && (node.previewMjImages.length === 4 || node.previewMjImages.length > 1) ? (
                                                     // 多张图片网格显示（即梦回传的四张图）
                                                     <div className={`w-full h-full grid gap-0.5 p-0.5 ${node.previewMjImages.length === 4 ? 'grid-cols-2 grid-rows-2' : 'grid-cols-2'}`}>
