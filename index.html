@@ -7321,85 +7321,152 @@ You must design a visual composition that tells the story through **8 distinct p
                             const isWebAppMode = /^\d{16,19}$/.test(effectiveWorkflowId);
 
                             if (isWebAppMode) {
-                                // ===== ★ Task API 模式（新接口）=====
-                                console.log(`[RunningHub Task API] 使用 WebApp 模式, WebAppId: ${effectiveWorkflowId}`);
+                                // ===== ★ OpenAPI v2 AI App 模式 =====
+                                // 端点：POST /openapi/v2/run/ai-app/{id}
+                                // 认证：Authorization: Bearer {apiKey}
+                                // 上传：/openapi/v2/media/upload/binary
+                                // 查询：/openapi/v2/query
+                                console.log(`[RunningHub v2 AI App] 使用 OpenAPI v2 模式, App ID: ${effectiveWorkflowId}`);
                                 
-                                // 1. 获取 AI 应用节点信息
+                                // 1. 获取 AI 应用节点信息（用于发现字段定义）
                                 let appNodes = [];
                                 try {
                                     appNodes = await getRunningHubAppNodes(effectiveWorkflowId);
-                                    console.log(`[RunningHub Task API] 获取到 ${appNodes.length} 个节点`);
-                                    appNodes.forEach(n => console.log(`  → [${n.nodeId}] ${n.nodeName} / ${n.fieldName} (${n.fieldType})`));
+                                    console.log(`[RunningHub v2 AI App] 获取到 ${appNodes.length} 个节点`);
+                                    appNodes.forEach(n => console.log(`  → [${n.nodeId}] ${n.nodeName}.${n.fieldName} (${n.fieldType})`));
                                 } catch (nodeErr) {
-                                    console.warn(`[RunningHub Task API] 获取节点信息失败: ${nodeErr.message}，将使用默认参数`);
+                                    console.warn(`[RunningHub v2 AI App] 获取节点信息失败: ${nodeErr.message}，继续使用默认节点ID`);
                                 }
 
-                                // 2. 准备图片上传和 nodeInfoList
+                                // 2. 准备 nodeInfoList
                                 const nodeInfoList = [];
                                 const allImages = [...connectedImages];
                                 if (sourceImage && !allImages.includes(sourceImage)) allImages.push(sourceImage);
 
-                                // 找出所有 IMAGE 类型的节点
+                                // ---- 2a. 图片：上传并分配到 IMAGE 节点 ----
                                 const imageInputNodes = appNodes.filter(n => n.fieldType === 'IMAGE');
-                                const stringInputNodes = appNodes.filter(n => n.fieldType === 'STRING' || n.fieldType === 'LIST');
                                 
-                                // 上传图片并分配到对应节点
                                 if (allImages.length > 0 && imageInputNodes.length > 0) {
+                                    // 使用 v2 文件上传接口
                                     for (let i = 0; i < allImages.length; i++) {
                                         try {
-                                            // 使用 Task API 的上传接口
-                                            const uploadResult = await uploadToRunningHubTask(allImages[i], 'image');
-                                            
-                                            // 循环分配到 IMAGE 类型节点（按文档示例格式）
+                                            const uploadResult = await uploadToRunningHub(allImages[i]);
                                             const targetNode = imageInputNodes[i % imageInputNodes.length];
                                             nodeInfoList.push({
                                                 nodeId: targetNode.nodeId,
                                                 fieldName: targetNode.fieldName,
-                                                fieldValue: uploadResult.fileName,
-                                                description: targetNode.description || ''
+                                                fieldValue: uploadResult.pureFileName || uploadResult.fileName,
+                                                description: targetNode.description || '上传图像'
                                             });
-                                            // LIST 类型需要 fieldData
-                                            if (targetNode.fieldType === 'LIST' && targetNode.fieldData) {
-                                                nodeInfoList[nodeInfoList.length - 1].fieldData = targetNode.fieldData;
-                                            }
-                                            console.log(`[RunningHub Task API] 图片${i+1} → 节点[${targetNode.nodeId}].${targetNode.fieldName}: ${uploadResult.fileName}`);
+                                            console.log(`[RunningHub v2 AI App] 图片${i+1} → [${targetNode.nodeId}].${targetNode.fieldName}: ${uploadResult.pureFileName}`);
                                         } catch (uploadErr) {
-                                            console.error(`[RunningHub Task API] 图片${i+1} 上传失败:`, uploadErr);
+                                            console.error(`[RunningHub v2 AI App] 图片${i+1} 上传失败:`, uploadErr);
                                         }
                                     }
-                                } else if (allImages.length > 0) {
-                                    console.warn(`[RunningHub Task API] 无 IMAGE 类型输入节点，跳过 ${allImages.length} 张图`);
-                                }
-
-                                // 处理 Prompt → STRING/LIST 节点
-                                if (prompt && stringInputNodes.length > 0) {
-                                    // 优先找 prompt 相关字段
-                                    let promptNode = stringInputNodes.find(n => 
-                                        n.fieldName.toLowerCase().includes('prompt') || 
-                                        n.nodeName.toLowerCase().includes('prompt') ||
-                                        n.description?.toLowerCase().includes('提示')
-                                    );
-                                    // 其次找 text 字段
-                                    if (!promptNode) promptNode = stringInputNodes.find(n => n.fieldName.toLowerCase().includes('text'));
-                                    // 再其次取第一个
-                                    if (!promptNode) promptNode = stringInputNodes[0];
-
-                                    const entry = {
-                                        nodeId: promptNode.nodeId,
-                                        fieldName: promptNode.fieldName,
-                                        fieldValue: prompt,
-                                        description: promptNode.description || ''
-                                    };
-                                    if (promptNode.fieldType === 'LIST' && promptNode.fieldData) {
-                                        entry.fieldData = promptNode.fieldData;
+                                } else if (allImages.length > 0 && imageInputNodes.length === 0) {
+                                    // 无 IMAGE 节点但图片存在，尝试用固定节点ID兜底（兼容 Seedance2.0）
+                                    console.warn(`[RunningHub v2 AI App] 未发现 IMAGE 类型节点，尝试默认 LoadImage 节点`);
+                                    for (let i = 0; i < Math.min(allImages.length, 4); i++) {
+                                        try {
+                                            const uploadResult = await uploadToRunningHub(allImages[i]);
+                                            const defaultImgNodeIds = ['2', '9', '10', '12']; // Seedance2.0 常见 LoadImage 节点
+                                            const imgNodeId = defaultImgNodeIds[i] || '2';
+                                            nodeInfoList.push({ nodeId: imgNodeId, fieldName: 'image', fieldValue: uploadResult.pureFileName || uploadResult.fileName, description: '上传图像' });
+                                            console.log(`[RunningHub v2 AI App] 兜底图片${i+1} → [${imgNodeId}].image`);
+                                        } catch (e) { /* skip */ }
                                     }
-                                    nodeInfoList.push(entry);
-                                    console.log(`[RunningHub Task API] Prompt → [${promptNode.nodeId}].${promptNode.fieldName} (${prompt.prompt?.length || 0}字)`);
                                 }
 
-                                // 3. 提交任务
-                                console.log(`[RunningHub Task API] 最终 nodeInfoList:`, JSON.stringify(nodeInfoList, null, 2));
-                                await runRunningHubTask(effectiveWorkflowId, nodeInfoList, taskId, actualSourceNodeId, w, h, true);
+                                // ---- 2b. 从设置面板读取功能开关参数 ----
+                                const nodeSettings = node?.settings || {};
+                                
+                                // 找出主参数节点（通常包含 prompt/duration/ratio 等字段）
+                                const paramNodes = appNodes.filter(n => 
+                                    n.fieldType === 'STRING' || n.fieldType === 'LIST'
+                                );
+                                // 尝试找到主参数节点（nodeId=1 或含 prompt/duration 字段的节点）
+                                const mainParamNode = appNodes.find(n => 
+                                    n.nodeId === '1' || 
+                                    (n.fieldType === 'LIST' && ['duration','ratio','resolution'].includes(n.fieldName))
+                                ) || paramNodes[0];
+
+                                // real_person_mode（真人模式开关）
+                                if (nodeSettings.rhRealPersonMode !== undefined) {
+                                    const rpTarget = appNodes.find(n => n.fieldName === 'real_person_mode');
+                                    const rpNodeId = rpTarget?.nodeId || mainParamNode?.nodeId || '1';
+                                    nodeInfoList.push({ nodeId: rpNodeId, fieldName: 'real_person_mode', fieldValue: String(nodeSettings.rhRealPersonMode), description: '支持真人开关' });
+                                    console.log(`[RunningHub v2 AI App] 真人模式: ${nodeSettings.rhRealPersonMode}`);
+                                }
+
+                                // duration（时长，LIST 类型需要 fieldData）
+                                if (nodeSettings.rhDuration) {
+                                    const durTarget = appNodes.find(n => n.fieldName === 'duration');
+                                    const durNodeId = durTarget?.nodeId || mainParamNode?.nodeId || '1';
+                                    const durEntry = {
+                                        nodeId: durNodeId,
+                                        fieldName: 'duration',
+                                        fieldValue: String(nodeSettings.rhDuration),
+                                        description: '时长（秒）'
+                                    };
+                                    // 附上 fieldData 枚举值（按文档格式）
+                                    if (durTarget?.fieldData) {
+                                        durEntry.fieldData = durTarget.fieldData;
+                                    } else {
+                                        durEntry.fieldData = '[["4","5","6","7","8","9","10","11","12","13","14","15"], {"default":"5"}]';
+                                    }
+                                    nodeInfoList.push(durEntry);
+                                    console.log(`[RunningHub v2 AI App] 时长: ${nodeSettings.rhDuration}s`);
+                                }
+
+                                // ratio（比例，LIST 类型需要 fieldData）
+                                if (nodeSettings.rhRatio) {
+                                    const ratTarget = appNodes.find(n => n.fieldName === 'ratio');
+                                    const ratNodeId = ratTarget?.nodeId || mainParamNode?.nodeId || '1';
+                                    const ratEntry = {
+                                        nodeId: ratNodeId,
+                                        fieldName: 'ratio',
+                                        fieldValue: String(nodeSettings.rhRatio),
+                                        description: '比例'
+                                    };
+                                    if (ratTarget?.fieldData) {
+                                        ratEntry.fieldData = ratTarget.fieldData;
+                                    } else {
+                                        ratEntry.fieldData = '[["adaptive","16:9","4:3","1:1","3:4","9:16","21:9"], {"default":"adaptive"}]';
+                                    }
+                                    nodeInfoList.push(ratEntry);
+                                    console.log(`[RunningHub v2 AI App] 比例: ${nodeSettings.rhRatio}`);
+                                }
+
+                                // resolution（分辨率，LIST 类型需要 fieldData）
+                                if (nodeSettings.rhResolution) {
+                                    const resTarget = appNodes.find(n => n.fieldName === 'resolution');
+                                    const resNodeId = resTarget?.nodeId || mainParamNode?.nodeId || '1';
+                                    const resEntry = {
+                                        nodeId: resNodeId,
+                                        fieldName: 'resolution',
+                                        fieldValue: String(nodeSettings.rhResolution),
+                                        description: '分辨率'
+                                    };
+                                    if (resTarget?.fieldData) {
+                                        resEntry.fieldData = resTarget.fieldData;
+                                    } else {
+                                        resEntry.fieldData = '[{"name":"480p","index":"480p"},{"name":"720p","index":"720p"},{"name":"1080p","index":"1080p"},{"name":"2k","index":"2k"},{"name":"4k","index":"4k"}]';
+                                    }
+                                    nodeInfoList.push(resEntry);
+                                    console.log(`[RunningHub v2 AI App] 分辨率: ${nodeSettings.rhResolution}`);
+                                }
+
+                                // ---- 2c. Prompt → 主参数节点 ----
+                                if (prompt) {
+                                    const promptTarget = appNodes.find(n => n.fieldName === 'prompt');
+                                    const pNodeId = promptTarget?.nodeId || mainParamNode?.nodeId || '1';
+                                    nodeInfoList.push({ nodeId: pNodeId, fieldName: 'prompt', fieldValue: prompt, description: '输入文本' });
+                                    console.log(`[RunningHub v2 AI App] Prompt → [${pNodeId}].prompt (${prompt.length}字)`);
+                                }
+
+                                // 3. 提交任务（使用 v2 AI App 端点）
+                                console.log(`[RunningHub v2 AI App] 最终 nodeInfoList:`, JSON.stringify(nodeInfoList, null, 2));
+                                await runRunningHubWorkflow(effectiveWorkflowId, nodeInfoList, taskId, actualSourceNodeId, w, h, true, true);
                                 return;
 
                             } else {
@@ -13609,7 +13676,7 @@ You must design a visual composition that tells the story through **8 distinct p
                                                     type="text"
                                                     value={node.settings?.runninghubWorkflowId || ''}
                                                     onChange={(e) => updateNodeSettings(node.id, { runninghubWorkflowId: e.target.value })}
-                                                    placeholder="Workflow ID（可选，留空用全局）"
+                                                    placeholder="WebAppId / Workflow ID（留空用全局）"
                                                     className={`w-full px-2 py-1 text-[10px] rounded border ${
                                                         theme === 'dark'
                                                             ? 'bg-zinc-800/50 border-zinc-700/50 text-zinc-300 placeholder:text-zinc-500'
@@ -13914,6 +13981,106 @@ You must design a visual composition that tells the story through **8 distinct p
                                                                 <span>首尾帧</span>
                                                             </label>
                                                         );
+                                                    })()}
+                                                    {/* ★ RunningHub AI App 功能开关（仅 runninghub-video + WebApp 模式显示） */}
+                                                    {node.type === 'gen-video' && (() => {
+                                                        const currentModel = node.settings?.model || '';
+                                                        const modelConfig = apiConfigsMap.get(currentModel);
+                                                        const isRHVideo = currentModel === 'runninghub-video' || modelConfig?.isRunningHub;
+                                                        if (!isRHVideo) return null;
+                                                        // 检测是否为 WebApp 模式（16~19位数字 ID）
+                                                        const wid = node.settings?.runninghubWorkflowId || '';
+                                                        const isWebApp = /^\d{16,19}$/.test(wid);
+                                                        if (!isWebApp) return null;
+                                                        
+                                                        return <>
+                                                            {/* 真人模式开关 */}
+                                                            <label className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] border cursor-pointer transition-colors ${
+                                                                theme === 'dark'
+                                                                    ? node.settings?.rhRealPersonMode ? 'bg-purple-600/25 border-purple-500 text-purple-200' : 'bg-zinc-800/50 hover:bg-zinc-800 text-zinc-400 border-zinc-700/50'
+                                                                    : node.settings?.rhRealPersonMode ? 'bg-purple-500/20 border-purple-300 text-purple-700' : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-600 border-zinc-300'
+                                                            }`} onClick={e => e.stopPropagation()}>
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={node.settings?.rhRealPersonMode || false}
+                                                                    onChange={(e) => {
+                                                                        e.stopPropagation();
+                                                                        updateNodeSettings(node.id, { rhRealPersonMode: e.target.checked });
+                                                                    }}
+                                                                    className="w-3 h-3 cursor-pointer"
+                                                                    onMouseDown={e => e.stopPropagation()}
+                                                                />
+                                                                <span>真人</span>
+                                                            </label>
+
+                                                            {/* 时长选择器 */}
+                                                            <div className="relative">
+                                                                <button
+                                                                    title={`时长: ${node.settings?.rhDuration || 5}秒`}
+                                                                    onMouseDown={e => e.stopPropagation()}
+                                                                    onClick={e => { e.stopPropagation(); setActiveDropdown(activeDropdown?.type === 'rhDuration' && activeDropdown.nodeId === node.id ? null : { nodeId: node.id, type: 'rhDuration' }); }}
+                                                                    className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] border transition-colors ${
+                                                                        theme === 'dark' ? 'bg-zinc-800/50 hover:bg-zinc-800 text-zinc-400 border-zinc-700/50' : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-600 border-zinc-300'
+                                                                    }`}
+                                                                >
+                                                                    <Clock size={9} />
+                                                                    <span>{node.settings?.rhDuration || 5}s</span>
+                                                                </button>
+                                                                {activeDropdown?.nodeId === node.id && activeDropdown.type === 'rhDuration' && (
+                                                                    <div className={`absolute bottom-full right-0 mb-1 w-16 rounded-lg shadow-xl p-1 z-[60] border max-h-48 overflow-y-auto custom-scrollbar ${theme === 'dark' ? 'bg-[#18181b] border-zinc-700' : 'bg-white border-zinc-200'}`} onMouseDown={e => e.stopPropagation()}>
+                                                                        {[4,5,6,7,8,9,10,11,12,13,14,15].map(d => (
+                                                                            <button key={d} onClick={() => { updateNodeSettings(node.id, { rhDuration: d }); setActiveDropdown(null); }} className={`w-full text-center py-1 text-[10px] rounded ${theme === 'dark' ? 'text-zinc-300 hover:bg-zinc-800' : 'text-zinc-700 hover:bg-zinc-100'} ${node.settings?.rhDuration === d ? (theme === 'dark' ? 'bg-blue-600/30 text-blue-300' : 'bg-blue-100 text-blue-700') : ''}`}>
+                                                                                {d}s
+                                                                            </button>
+                                                                        ))}
+                                                                    </div>
+                                                                )}
+                                                            </div>
+
+                                                            {/* 比例选择器 */}
+                                                            <div className="relative">
+                                                                <button
+                                                                    title={`比例: ${node.settings?.rhRatio || 'adaptive'}`}
+                                                                    onMouseDown={e => e.stopPropagation()}
+                                                                    onClick={e => { e.stopPropagation(); setActiveDropdown(activeDropdown?.type === 'rhRatio' && activeDropdown.nodeId === node.id ? null : { nodeId: node.id, type: 'rhRatio' }); }}
+                                                                    className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] border transition-colors ${theme === 'dark' ? 'bg-zinc-800/50 hover:bg-zinc-800 text-zinc-400 border-zinc-700/50' : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-600 border-zinc-300'}`}
+                                                                >
+                                                                    <Maximize2 size={9} />
+                                                                    <span>{node.settings?.rhRatio || '自适应'}</span>
+                                                                </button>
+                                                                {activeDropdown?.nodeId === node.id && activeDropdown.type === 'rhRatio' && (
+                                                                    <div className={`absolute bottom-full right-0 mb-1 w-20 rounded-lg shadow-xl p-1 z-[60] border max-h-48 overflow-y-auto custom-scrollbar ${theme === 'dark' ? 'bg-[#18181b] border-zinc-700' : 'bg-white border-zinc-200'}`} onMouseDown={e => e.stopPropagation()}>
+                                                                        {['adaptive','16:9','4:3','1:1','3:4','9:16','21:9'].map(r => (
+                                                                            <button key={r} onClick={() => { updateNodeSettings(node.id, { rhRatio: r }); setActiveDropdown(null); }} className={`w-full text-center py-1 text-[10px] rounded ${theme === 'dark' ? 'text-zinc-300 hover:bg-zinc-800' : 'text-zinc-700 hover:bg-zinc-100'} ${(node.settings?.rhRatio||'adaptive') === r ? (theme === 'dark' ? 'bg-blue-600/30 text-blue-300' : 'bg-blue-100 text-blue-700') : ''}`}>
+                                                                                {r === 'adaptive' ? '自适应' : r}
+                                                                            </button>
+                                                                        ))}
+                                                                    </div>
+                                                                )}
+                                                            </div>
+
+                                                            {/* 分辨率选择器 */}
+                                                            <div className="relative">
+                                                                <button
+                                                                    title={`分辨率: ${node.settings?.rhResolution || '720p'}`}
+                                                                    onMouseDown={e => e.stopPropagation()}
+                                                                    onClick={e => { e.stopPropagation(); setActiveDropdown(activeDropdown?.type === 'rhResolution' && activeDropdown.nodeId === node.id ? null : { nodeId: node.id, type: 'rhResolution' }); }}
+                                                                    className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] border transition-colors ${theme === 'dark' ? 'bg-zinc-800/50 hover:bg-zinc-800 text-zinc-400 border-zinc-700/50' : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-600 border-zinc-300'}`}
+                                                                >
+                                                                    <Monitor size={9} />
+                                                                    <span>{node.settings?.rhResolution || '720p'}</span>
+                                                                </button>
+                                                                {activeDropdown?.nodeId === node.id && activeDropdown.type === 'rhResolution' && (
+                                                                    <div className={`absolute bottom-full right-0 mb-1 w-20 rounded-lg shadow-xl p-1 z-[60] border max-h-48 overflow-y-auto custom-scrollbar ${theme === 'dark' ? 'bg-[#18181b] border-zinc-700' : 'bg-white border-zinc-200'}`} onMouseDown={e => e.stopPropagation()}>
+                                                                        {['480p','720p','1080p','2k','4k'].map(res => (
+                                                                            <button key={res} onClick={() => { updateNodeSettings(node.id, { rhResolution: res }); setActiveDropdown(null); }} className={`w-full text-center py-1 text-[10px] rounded ${theme === 'dark' ? 'text-zinc-300 hover:bg-zinc-800' : 'text-zinc-700 hover:bg-zinc-100'} ${(node.settings?.rhResolution||'720p') === res ? (theme === 'dark' ? 'bg-blue-600/30 text-blue-300' : 'bg-blue-100 text-blue-700') : ''}`}>
+                                                                                {res}
+                                                                            </button>
+                                                                        ))}
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        </>;
                                                     })()}
                                                 </>
                                                     ) : null;
