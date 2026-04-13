@@ -1359,12 +1359,17 @@ You must design a visual composition that tells the story through **8 distinct p
                     if (!saved) return [];
                     const parsed = JSON.parse(saved);
                     // 检查是否有需要重新切割的Midjourney图片
+                    // 防御性处理：确保 errorMsg 始终是字符串，避免 React Error #31
                     return parsed.map(item => {
-                        if (item.mjNeedsSplit && item.mjOriginalUrl && item.apiConfig?.modelId?.includes('mj')) {
-                            // 标记需要重新切割，但不立即切割（避免阻塞初始化）
-                            return { ...item, url: item.mjOriginalUrl, mjImages: null, mjNeedsSplit: true };
+                        let safeItem = item;
+                        if (item.errorMsg !== undefined && item.errorMsg !== null && typeof item.errorMsg !== 'string') {
+                            safeItem = { ...item, errorMsg: JSON.stringify(item.errorMsg) };
                         }
-                        return item;
+                        if (safeItem.mjNeedsSplit && safeItem.mjOriginalUrl && safeItem.apiConfig?.modelId?.includes('mj')) {
+                            // 标记需要重新切割，但不立即切割（避免阻塞初始化）
+                            return { ...safeItem, url: safeItem.mjOriginalUrl, mjImages: null, mjNeedsSplit: true };
+                        }
+                        return safeItem;
                     });
                 } catch (e) {
                     console.error('加载历史记录失败:', e);
@@ -1560,7 +1565,14 @@ You must design a visual composition that tells the story through **8 distinct p
             // localStorage 写入防抖函数
             const debouncedSaveHistory = useMemo(() => debounce((historyToSave) => {
                 try {
-                    localStorage.setItem('tapnow_history', JSON.stringify(historyToSave));
+                    // 防御性处理：确保 errorMsg 始终是字符串（避免 React Error #31）
+                    const safeHistory = historyToSave.map(item => {
+                        if (item.errorMsg !== undefined && item.errorMsg !== null && typeof item.errorMsg !== 'string') {
+                            return { ...item, errorMsg: JSON.stringify(item.errorMsg) };
+                        }
+                        return item;
+                    });
+                    localStorage.setItem('tapnow_history', JSON.stringify(safeHistory));
                 } catch (e) {
                     console.error('保存历史记录失败（可能超出存储配额）:', e);
                     // 如果存储失败，尝试减少数据量
@@ -14480,17 +14492,17 @@ You must design a visual composition that tells the story through **8 distinct p
                                                 </div>
                                                 {item.status === 'failed' && item.errorMsg && (
                                                     <p className="text-[9px] text-red-500 mt-1 break-words whitespace-pre-wrap">
-                                                        {item.errorMsg.split('\n').map((line, idx) => (
+                                                        {String(item.errorMsg).split('\n').map((line, idx) => (
                                                             <span key={idx}>
                                                                 {line}
-                                                                {idx < item.errorMsg.split('\n').length - 1 && <br />}
+                                                                {idx < String(item.errorMsg).split('\n').length - 1 && <br />}
                                                             </span>
                                                         ))}
                                                     </p>
                                                 )}
                                                 {item.status === 'generating' && (
                                                     <p className="text-[9px] text-blue-500 mt-1">
-                                                        {item.errorMsg || '生成中...'}
+                                                        {typeof item.errorMsg === 'string' ? item.errorMsg : '生成中...'}
                                                     </p>
                                                 )}
                                             </div>
