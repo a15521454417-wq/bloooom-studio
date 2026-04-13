@@ -7414,22 +7414,28 @@ You must design a visual composition that tells the story through **8 distinct p
                                 // ===== ★ 快捷创作 Quick AI App 模式（优先）或 OpenAPI v2 AI App 降级 =====
                                 // 快捷创作：POST /task/openapi/quick-ai-app/run（body 认证 + quickCreateCode）
                                 // OpenAPI v2：POST /openapi/v2/run/ai-app/{id}（Bearer 认证）
-                                // 上传均用：/openapi/v2/media/upload/binary
-                                // 查询均用：/openapi/v2/query
+                                
+                                // 清理 effectiveWorkflowId（去掉可能的路径前缀）
+                                let cleanAppId = effectiveWorkflowId;
+                                if (cleanAppId.includes('/run/workflow/')) {
+                                    cleanAppId = cleanAppId.split('/run/workflow/').pop();
+                                } else if (cleanAppId.includes('/run/ai-app/')) {
+                                    cleanAppId = cleanAppId.split('/run/ai-app/').pop();
+                                }
                                 
                                 // 读取快捷创作 code（从节点设置 > 全局设置 > 空）
                                 const quickCreateCode = node?.settings?.rhQuickCreateCode || runninghubQuickCreateCode || '';
                                 const useQuickMode = !!quickCreateCode;
-                                console.log(`[RunningHub Video] 模式: ${useQuickMode ? '快捷创作 Quick AI App (code=' + quickCreateCode + ')' : 'OpenAPI v2 AI App'}, App ID: ${effectiveWorkflowId}`);
+                                console.log(`[RunningHub Video] 模式: ${useQuickMode ? '快捷创作 Quick AI App (code=' + quickCreateCode + ')' : 'OpenAPI v2 AI App'}, App ID: ${cleanAppId}`);
 
-                                // 1. 获取 AI 应用节点信息（用于发现字段定义）
+                                // 1. 获取 AI 应用节点信息（用于发现字段定义）— 使用清理后的 ID
                                 let appNodes = [];
                                 try {
-                                    appNodes = await getRunningHubAppNodes(effectiveWorkflowId);
+                                    appNodes = await getRunningHubAppNodes(cleanAppId);
                                     console.log(`[RunningHub Video] 获取到 ${appNodes.length} 个节点`);
-                                    appNodes.forEach(n => console.log(`  → [${n.nodeId}] ${n.nodeName}.${n.fieldName} (${n.fieldType})`));
+                                    appNodes.forEach(n => console.log(`  -> [${n.nodeId}] ${n.nodeName}.${n.fieldName} (${n.fieldType})`));
                                 } catch (nodeErr) {
-                                    console.warn(`[RunningHub Video] 获取节点信息失败: ${nodeErr.message}，继续使用默认节点ID`);
+                                    console.warn(`[RunningHub Video] 获取节点信息失败: ${nodeErr.message}`);
                                 }
 
                                 // 2. 准备 nodeInfoList（快捷创作格式要求 nodeName + fieldType）
@@ -7440,7 +7446,8 @@ You must design a visual composition that tells the story through **8 distinct p
                                 // ---- 2a. 图片：上传并分配到 IMAGE 节点 ----
                                 const imageInputNodes = appNodes.filter(n => n.fieldType === 'IMAGE');
                                 
-                                if (allImages.length > 0 && imageInputNodes.length > 0) {
+                                if (allImages.length > 0 && imageInputNodes.length > 0 && appNodes.length > 0) {
+                                    // 有图片 + 有已发现的 IMAGE 节点 -> 正常上传分配
                                     for (let i = 0; i < allImages.length; i++) {
                                         try {
                                             const uploadResult = await uploadToRunningHub(allImages[i]);
@@ -7453,54 +7460,69 @@ You must design a visual composition that tells the story through **8 distinct p
                                                 fieldValue: uploadResult.pureFileName || uploadResult.fileName,
                                                 description: targetNode.description || '上传图像'
                                             });
-                                            console.log(`[RunningHub Video] 图片${i+1} → [${targetNode.nodeId}] ${targetNode.nodeName}.${targetNode.fieldName}: ${uploadResult.pureFileName}`);
+                                            console.log(`[RunningHub Video] 图片${i+1} -> [${targetNode.nodeId}] ${targetNode.nodeName}.${targetNode.fieldName}: ${uploadResult.pureFileName}`);
                                         } catch (uploadErr) {
                                             console.error(`[RunningHub Video] 图片${i+1} 上传失败:`, uploadErr);
                                         }
                                     }
-                                } else if (allImages.length > 0 && imageInputNodes.length === 0) {
-                                    console.warn(`[RunningHub Video] 未发现 IMAGE 类型节点，尝试默认 LoadImage 节点`);
-                                    for (let i = 0; i < Math.min(allImages.length, 4); i++) {
-                                        try {
-                                            const uploadResult = await uploadToRunningHub(allImages[i]);
-                                            const defaultImgNodeIds = ['2', '9', '10', '12'];
-                                            const imgNodeId = defaultImgNodeIds[i] || '2';
-                                            nodeInfoList.push({ nodeId: imgNodeId, nodeName: 'LoadImage', fieldName: 'image', fieldType: 'IMAGE', fieldValue: uploadResult.pureFileName || uploadResult.fileName, description: '上传图像' });
-                                            console.log(`[RunningHub Video] 兜底图片${i+1} → [${imgNodeId}].image`);
-                                        } catch (e) { /* skip */ }
+                                } else if (allImages.length > 0 && appNodes.length > 0) {
+                                    // 有图片 + 已获取节点但无 IMAGE 类型 -> 尝试找 image 字段
+                                    console.warn(`[RunningHub Video] 未发现 IMAGE 类型节点，尝试从已有节点找 image 字段`);
+                                    const imageFieldNodes = appNodes.filter(n => n.fieldName === 'image' && ['IMAGE','STRING'].includes(n.fieldType));
+                                    if (imageFieldNodes.length > 0) {
+                                        for (let i = 0; i < Math.min(allImages.length, imageFieldNodes.length); i++) {
+                                            try {
+                                                const uploadResult = await uploadToRunningHub(allImages[i]);
+                                                const targetNode = imageFieldNodes[i % imageFieldNodes.length];
+                                                nodeInfoList.push({
+                                                    nodeId: targetNode.nodeId,
+                                                    nodeName: targetNode.nodeName || 'LoadImage',
+                                                    fieldName: targetNode.fieldName,
+                                                    fieldType: targetNode.fieldType,
+                                                    fieldValue: uploadResult.pureFileName || uploadResult.fileName,
+                                                    description: targetNode.description || '上传图像'
+                                                });
+                                                console.log(`[RunningHub Video] 图片${i+1}(image字段匹配) -> [${targetNode.nodeId}].${targetNode.fieldName}: ${uploadResult.pureFileName}`);
+                                            } catch (e) { /* skip */ }
+                                        }
+                                    } else {
+                                        console.warn(`[RunningHub Video] 无法确定图片应映射到哪个节点，跳过图片参数（仅发送文本和功能开关）`);
                                     }
+                                } else if (allImages.length > 0) {
+                                    // 节点信息获取失败 -> 不猜测节点ID，只发文字参数
+                                    console.warn(`[RunningHub Video] 节点信息未获取到，跳过图片上传（避免 nodeId 不匹配报错）。请检查 API Key 和 WebAppId 是否正确。`);
                                 }
 
                                 // ---- 2b. 从设置面板读取功能开关参数 ----
                                 const nodeSettings = node?.settings || {};
                                 
                                 const paramNodes = appNodes.filter(n => 
-                                    n.fieldType === 'STRING' || n.fieldType === 'LIST'
+                                    n.fieldType === 'STRING' || n.fieldType === 'LIST' || n.fieldType === 'INT' || n.fieldType === 'BOOLEAN' || n.fieldType === 'SWITCH'
                                 );
                                 const mainParamNode = appNodes.find(n => 
                                     n.nodeId === '1' || 
-                                    (n.fieldType === 'LIST' && ['duration','ratio','resolution'].includes(n.fieldName))
+                                    ['duration','ratio','resolution','real_person_mode','prompt'].includes(n.fieldName)
                                 ) || paramNodes[0];
 
                                 // real_person_mode（真人模式开关）
                                 if (nodeSettings.rhRealPersonMode !== undefined) {
                                     const rpTarget = appNodes.find(n => n.fieldName === 'real_person_mode');
                                     const rpNodeId = rpTarget?.nodeId || mainParamNode?.nodeId || '1';
-                                    const rpNodeName = rpTarget?.nodeName || 'KlingVideoV1';
-                                    nodeInfoList.push({ nodeId: rpNodeId, nodeName: rpNodeName, fieldName: 'real_person_mode', fieldType: 'STRING', fieldValue: String(nodeSettings.rhRealPersonMode), description: '支持真人开关' });
+                                    const rpNodeName = rpTarget?.nodeName || mainParamNode?.nodeName || '';
+                                    nodeInfoList.push({ nodeId: rpNodeId, nodeName: rpNodeName, fieldName: 'real_person_mode', fieldType: rpTarget?.fieldType || 'STRING', fieldValue: String(nodeSettings.rhRealPersonMode), description: '支持真人开关' });
                                     console.log(`[RunningHub Video] 真人模式: ${nodeSettings.rhRealPersonMode}`);
                                 }
 
-                                // duration（时长，LIST 类型需要 fieldData）
+                                // duration（时长）
                                 if (nodeSettings.rhDuration) {
                                     const durTarget = appNodes.find(n => n.fieldName === 'duration');
                                     const durNodeId = durTarget?.nodeId || mainParamNode?.nodeId || '1';
-                                    const durNodeName = durTarget?.nodeName || mainParamNode?.nodeName || 'KlingVideoV1';
+                                    const durNodeName = durTarget?.nodeName || mainParamNode?.nodeName || '';
                                     const durEntry = {
                                         nodeId: durNodeId,
                                         nodeName: durNodeName,
                                         fieldName: 'duration',
-                                        fieldType: 'LIST',
+                                        fieldType: durTarget?.fieldType || 'LIST',
                                         fieldValue: String(nodeSettings.rhDuration),
                                         description: '时长（秒）'
                                     };
@@ -7513,16 +7535,16 @@ You must design a visual composition that tells the story through **8 distinct p
                                     console.log(`[RunningHub Video] 时长: ${nodeSettings.rhDuration}s`);
                                 }
 
-                                // ratio（比例，LIST 类型需要 fieldData）
+                                // ratio（比例）
                                 if (nodeSettings.rhRatio) {
                                     const ratTarget = appNodes.find(n => n.fieldName === 'ratio');
                                     const ratNodeId = ratTarget?.nodeId || mainParamNode?.nodeId || '1';
-                                    const ratNodeName = ratTarget?.nodeName || mainParamNode?.nodeName || 'KlingVideoV1';
+                                    const ratNodeName = ratTarget?.nodeName || mainParamNode?.nodeName || '';
                                     const ratEntry = {
                                         nodeId: ratNodeId,
                                         nodeName: ratNodeName,
                                         fieldName: 'ratio',
-                                        fieldType: 'LIST',
+                                        fieldType: ratTarget?.fieldType || 'LIST',
                                         fieldValue: String(nodeSettings.rhRatio),
                                         description: '比例'
                                     };
@@ -7535,16 +7557,16 @@ You must design a visual composition that tells the story through **8 distinct p
                                     console.log(`[RunningHub Video] 比例: ${nodeSettings.rhRatio}`);
                                 }
 
-                                // resolution（分辨率，LIST 类型需要 fieldData）
+                                // resolution（分辨率）
                                 if (nodeSettings.rhResolution) {
                                     const resTarget = appNodes.find(n => n.fieldName === 'resolution');
                                     const resNodeId = resTarget?.nodeId || mainParamNode?.nodeId || '1';
-                                    const resNodeName = resTarget?.nodeName || mainParamNode?.nodeName || 'KlingVideoV1';
+                                    const resNodeName = resTarget?.nodeName || mainParamNode?.nodeName || '';
                                     const resEntry = {
                                         nodeId: resNodeId,
                                         nodeName: resNodeName,
                                         fieldName: 'resolution',
-                                        fieldType: 'LIST',
+                                        fieldType: resTarget?.fieldType || 'LIST',
                                         fieldValue: String(nodeSettings.rhResolution),
                                         description: '分辨率'
                                     };
@@ -7557,18 +7579,18 @@ You must design a visual composition that tells the story through **8 distinct p
                                     console.log(`[RunningHub Video] 分辨率: ${nodeSettings.rhResolution}`);
                                 }
 
-                                // ---- 2c. Prompt → 主参数节点 ----
+                                // ---- 2c. Prompt -> 主参数节点 ----
                                 if (prompt) {
                                     const promptTarget = appNodes.find(n => n.fieldName === 'prompt');
                                     const pNodeId = promptTarget?.nodeId || mainParamNode?.nodeId || '1';
-                                    const pNodeName = promptTarget?.nodeName || mainParamNode?.nodeName || 'KlingVideoV1';
-                                    nodeInfoList.push({ nodeId: pNodeId, nodeName: pNodeName, fieldName: 'prompt', fieldType: 'STRING', fieldValue: prompt, description: '输入文本' });
-                                    console.log(`[RunningHub Video] Prompt → [${pNodeId}] ${pNodeName}.prompt (${prompt.length}字)`);
+                                    const pNodeName = promptTarget?.nodeName || mainParamNode?.nodeName || '';
+                                    nodeInfoList.push({ nodeId: pNodeId, nodeName: pNodeName, fieldName: 'prompt', fieldType: promptTarget?.fieldType || 'STRING', fieldValue: prompt, description: '输入文本' });
+                                    console.log(`[RunningHub Video] Prompt -> [${pNodeId}] ${pNodeName||'?'}.prompt (${prompt.length}字)`);
                                 }
 
-                                // 3. 提交任务
-                                console.log(`[RunningHub Video] 最终 nodeInfoList:`, JSON.stringify(nodeInfoList, null, 2));
-                                await runRunningHubWorkflow(effectiveWorkflowId, nodeInfoList, taskId, actualSourceNodeId, w, h, true, true, quickCreateCode);
+                                // 3. 提交任务（传入清理后的 cleanAppId）
+                                console.log(`[RunningHub Video] 最终 nodeInfoList (${nodeInfoList.length}项):`, JSON.stringify(nodeInfoList, null, 2));
+                                await runRunningHubWorkflow(cleanAppId, nodeInfoList, taskId, actualSourceNodeId, w, h, true, true, quickCreateCode);
                                 return;
 
                             } else {
