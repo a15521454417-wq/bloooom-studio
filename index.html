@@ -1329,7 +1329,6 @@ You must design a visual composition that tells the story through **8 distinct p
             const [runninghubApiKey, setRunninghubApiKey] = useState(() => localStorage.getItem('tapnow_runninghub_api_key') || '');
             const [runninghubWorkflowId, setRunninghubWorkflowId] = useState(() => localStorage.getItem('tapnow_runninghub_workflow_id') || '');
             const [runninghubWebhook, setRunninghubWebhook] = useState(() => localStorage.getItem('tapnow_runninghub_webhook') || '');
-            const [runninghubQuickCreateCode, setRunninghubQuickCreateCode] = useState(() => localStorage.getItem('tapnow_runninghub_quick_create_code') || '');
 
             // 保存 RunningHub 配置到 localStorage
             useEffect(() => {
@@ -1341,9 +1340,6 @@ You must design a visual composition that tells the story through **8 distinct p
             useEffect(() => {
                 localStorage.setItem('tapnow_runninghub_webhook', runninghubWebhook);
             }, [runninghubWebhook]);
-            useEffect(() => {
-                localStorage.setItem('tapnow_runninghub_quick_create_code', runninghubQuickCreateCode);
-            }, [runninghubQuickCreateCode]);
 
             // 项目名称状态
             const [projectName, setProjectName] = useState(() => {
@@ -4515,8 +4511,8 @@ You must design a visual composition that tells the story through **8 distinct p
                 }
             };
 
-            // ===== RunningHub 文件上传函数（v2 API）=====
-            const uploadToRunningHub = async (imageData) => {
+            // ===== RunningHub 文件上传函数（Task API）=====
+            const uploadToRunningHub = async (imageData, fileType = 'image') => {
                 try {
                     let blob;
                     if (imageData.startsWith('data:')) {
@@ -4526,39 +4522,42 @@ You must design a visual composition that tells the story through **8 distinct p
                         const response = await fetch(imageData);
                         blob = await response.blob();
                     } else {
-                        throw new Error('不支持的图片数据格式');
+                        throw new Error('不支持的文件数据格式');
                     }
 
                     const formData = new FormData();
-                    const mimeType = blob.type || 'image/png';
-                    const extension = mimeType.split('/')[1] || 'png';
+                    const mimeType = blob.type || (fileType === 'image' ? 'image/png' : fileType === 'video' ? 'video/mp4' : 'audio/mpeg');
+                    const extMap = { image: ['png', 'jpg', 'jpeg', 'webp'], video: ['mp4', 'mov'], audio: ['mp3', 'wav'] };
+                    const extension = mimeType.split('/')[1] || (extMap[fileType]?.[0] || 'bin');
                     const fileName = `upload_${Date.now()}.${extension}`;
                     formData.append('file', blob, fileName);
+                    formData.append('fileType', fileType);
+                    formData.append('apiKey', runninghubApiKey);
 
-                    const resp = await fetch(`${RUNNINGHUB_BASE_URL}/openapi/v2/media/upload/binary`, {
+                    console.log(`[RunningHub Upload] 上传文件 (${fileType}):`, { size: blob.size, type: mimeType });
+
+                    // ★ Task API 上传端点
+                    const resp = await fetch(`${RUNNINGHUB_BASE_URL}/task/openapi/upload`, {
                         method: 'POST',
-                        headers: { 'Authorization': `Bearer ${runninghubApiKey}` },
+                        headers: { 'Host': 'www.runninghub.cn' },
                         body: formData
                     });
 
                     if (!resp.ok) throw new Error(`上传失败: HTTP ${resp.status}`);
 
                     const data = await resp.json();
-                    console.log('[Tapnow] RunningHub v2 Upload:', data);
+                    console.log('[RunningHub Upload] 结果:', data);
 
-                    if (data.code === 0 && data.data) {
-                        const fullFileName = data.data.fileName;
-                        const pureFileName = fullFileName.split('/').pop();
+                    if (data.code === 0 && data.data?.fileName) {
                         return {
-                            fileName: fullFileName,
-                            pureFileName: pureFileName,
-                            url: data.data.download_url || data.data.url || `https://www.runninghub.cn/${fullFileName}`
+                            fileName: data.data.fileName,
+                            url: data.data.downloadUrl || data.data.url || ''
                         };
                     } else {
                         throw new Error(data.msg || data.message || '上传失败');
                     }
                 } catch (err) {
-                    console.error('[Tapnow] RunningHub v2 Upload Error:', err);
+                    console.error('[RunningHub Upload] Error:', err);
                     throw err;
                 }
             };
@@ -4644,11 +4643,12 @@ You must design a visual composition that tells the story through **8 distinct p
 
             // ===== RunningHub 启动工作流函数（v2 API）=====
             // isAIApp: true = AI App（固定节点ID），false = ComfyUI 工作流（动态节点ID）
-            // ===== RunningHub 快捷创作 Quick AI App 接口（唯一接口） =====
-            // 端点：POST /task/openapi/quick-ai-app/run
-            // 认证方式：Body 里传 apiKey（非 Bearer header）
-            // 参数：webappId + apiKey + quickCreateCode(必填) + nodeInfoList（含 nodeName + fieldType）
-            const runRunningHubWorkflow = async (workflowId, nodeInfoList, taskId, sourceNodeId, w, h, isVideoWorkflow = false, quickCreateCode = '') => {
+            // ===== RunningHub AI App Run 接口（统一接口） =====
+            // 端点：POST /task/openapi/ai-app/run
+            // 认证方式：Body 里传 webappId + apiKey
+            // 查询端点：POST /task/openapi/outputs（body: apiKey + taskId）
+            // 上传端点：POST /task/openapi/upload
+            const runRunningHubWorkflow = async (workflowId, nodeInfoList, taskId, sourceNodeId, w, h, isVideoWorkflow = false) => {
                 try {
                     // 清理 workflowId
                     let cleanWorkflowId = workflowId;
@@ -4658,22 +4658,17 @@ You must design a visual composition that tells the story through **8 distinct p
                         cleanWorkflowId = cleanWorkflowId.split('/run/ai-app/').pop();
                     }
 
-                    // quickCreateCode 必填
-                    if (!quickCreateCode) {
-                        throw new Error('快捷创作 Code 未填写，请在全局设置或节点设置中配置 ⚡ 快捷Code');
-                    }
-
-                    const url = `${RUNNINGHUB_BASE_URL}/task/openapi/quick-ai-app/run`;
+                    // ★ AI App Run 端点（不需要 quickCreateCode）
+                    const url = `${RUNNINGHUB_BASE_URL}/task/openapi/ai-app/run`;
                     
                     const payload = {
                         webappId: cleanWorkflowId,
                         apiKey: runninghubApiKey,
-                        quickCreateCode: quickCreateCode,
                         nodeInfoList: nodeInfoList
                     };
 
                     console.log(`[RunningHub] URL: ${url}`);
-                    console.log(`[RunningHub] WebAppId: ${cleanWorkflowId}, Code: ${quickCreateCode}`);
+                    console.log(`[RunningHub] WebAppId: ${cleanWorkflowId}`);
                     console.log(`[RunningHub] Request:`, JSON.stringify(payload, null, 2));
 
                     const resp = await fetch(url, {
@@ -4688,24 +4683,27 @@ You must design a visual composition that tells the story through **8 distinct p
                     if (!resp.ok) {
                         const errText = await resp.text();
                         console.error('[RunningHub] HTTP Error:', resp.status, errText);
-                        throw new Error(`快捷创作启动失败: HTTP ${resp.status} - ${errText.substring(0, 200)}`);
+                        throw new Error(`任务提交失败: HTTP ${resp.status} - ${errText.substring(0, 200)}`);
                     }
 
                     const data = await resp.json();
                     console.log('[RunningHub] Response:', JSON.stringify(data, null, 2));
 
-                    const remoteTaskId = data.data?.taskId || data.taskId;
-                    if (remoteTaskId) {
-                        const initialStatus = data.data?.status || data.status || 'RUNNING';
+                    // 返回格式：{ code: 0, data: { taskId: "xxx" } }
+                    if (data.code === 0 && data.data?.taskId) {
+                        const remoteTaskId = data.data.taskId;
+
                         setHistory((prev) => prev.map((hItem) =>
                             hItem.id === taskId
-                                ? { ...hItem, remoteTaskId, errorMsg: initialStatus === 'QUEUED' ? '排队中' : '运行中' }
+                                ? { ...hItem, remoteTaskId, errorMsg: '排队中' }
                                 : hItem
                         ));
-                        pollRunningHubJob(remoteTaskId, workflowId, nodeInfoList, sourceNodeId, w, h, 0, isVideoWorkflow);
+
+                        // 使用 Task API 轮询查询
+                        pollRunningHubTaskJob(remoteTaskId, cleanWorkflowId, taskId, sourceNodeId, w, h, 0, isVideoWorkflow);
                     } else {
                         console.error('[RunningHub] Error Response:', JSON.stringify(data, null, 2));
-                        throw new Error(data.errorMessage || data.msg || data.message || data.errorCode || '快捷创作启动失败');
+                        throw new Error(data.msg || data.message || data.errorCode || '任务提交失败');
                     }
                 } catch (err) {
                     console.error('[RunningHub] Error:', err);
@@ -4717,70 +4715,8 @@ You must design a visual composition that tells the story through **8 distinct p
                 }
             };
 
-            // ===== RunningHub AI App Task API（新接口） =====
-            // 使用 /task/openapi/ai-app/run 提交任务，/task/openapi/outputs 查询结果
-            const runRunningHubTask = async (webAppId, nodeInfoList, taskId, sourceNodeId, w, h, isVideoWorkflow = false) => {
-                try {
-                    // ★ Task API 端点：POST /task/openapi/ai-app/run
-                    // 认证方式：Body 里传 webappId + apiKey
-                    const url = `${RUNNINGHUB_BASE_URL}/task/openapi/ai-app/run`;
-                    
-                    const payload = {
-                        webappId: webAppId,
-                        apiKey: runninghubApiKey,
-                        nodeInfoList: nodeInfoList
-                    };
-
-                    console.log(`[RunningHub Task API] URL: ${url}`);
-                    console.log(`[RunningHub Task API] WebAppId: ${webAppId}`);
-                    console.log(`[RunningHub Task API] Request:`, JSON.stringify(payload, null, 2));
-
-                    const resp = await fetch(url, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Host': 'www.runninghub.cn'
-                        },
-                        body: JSON.stringify(payload)
-                    });
-
-                    if (!resp.ok) {
-                        const errText = await resp.text();
-                        console.error('[RunningHub Task API] HTTP Error:', resp.status, errText);
-                        throw new Error(`任务提交失败: HTTP ${resp.status} - ${errText.substring(0, 200)}`);
-                    }
-
-                    const data = await resp.json();
-                    console.log(`[RunningHub Task API] Response:`, JSON.stringify(data, null, 2));
-
-                    // 返回格式：{ code: 0, data: { taskId: "xxx" } }
-                    if (data.code === 0 && data.data?.taskId) {
-                        const remoteTaskId = data.data.taskId;
-                        console.log(`[RunningHub Task API] 任务提交成功! taskId: ${remoteTaskId}`);
-
-                        setHistory((prev) => prev.map((hItem) =>
-                            hItem.id === taskId
-                                ? { ...hItem, remoteTaskId, errorMsg: '排队中' }
-                                : hItem
-                        ));
-
-                        // 开始轮询（使用 Task API 的查询接口）
-                        pollRunningHubTaskJob(remoteTaskId, webAppId, taskId, sourceNodeId, w, h, 0, isVideoWorkflow);
-                    } else {
-                        console.error('[RunningHub Task API] Error Response:', JSON.stringify(data, null, 2));
-                        throw new Error(data.msg || data.message || data.errorCode || '任务提交失败');
-                    }
-                } catch (err) {
-                    console.error('[RunningHub Task API] Run Error:', err);
-                    setHistory((prev) => prev.map((hItem) =>
-                        hItem.id === taskId
-                            ? { ...hItem, status: 'failed', errorMsg: err.message || 'AI App Task 启动失败' }
-                            : hItem
-                    ));
-                }
-            };
-
             // ===== RunningHub Task API 轮询查询 =====
+            // 使用 /task/openapi/outputs 查询任务状态
             const pollRunningHubTaskJob = async (remoteTaskId, webAppId, localTaskId, sourceNodeId, w, h, attempt = 0, isVideoWorkflow = false) => {
                 const maxAttempts = 300; // 最多轮询 25 分钟
                 if (attempt >= maxAttempts) {
@@ -6222,18 +6158,17 @@ You must design a visual composition that tells the story through **8 distinct p
                             const uploadedFiles = [];
                             for (let i = 0; i < allImages.length; i++) {
                                 try {
-                                    // v2 API 返回 { fileName, url, pureFileName }
-                                    const uploadResult = await uploadToRunningHub(allImages[i]);
+                                    // Task API 上传返回 { fileName, url }
+                                    const uploadResult = await uploadToRunningHub(allImages[i], 'image');
                                     uploadedFiles.push({
                                         index: i,
-                                        fileName: uploadResult.fileName,        // openapi/xxx.png (ComfyUI用)
-                                        pureFileName: uploadResult.pureFileName, // xxx.png (AI App用)
+                                        fileName: uploadResult.fileName,        // 文件路径
                                         url: uploadResult.url,
                                         originalUrl: allImages[i]
                                     });
-                                    console.log(`[RunningHub v2] 图片 ${i + 1} 上传成功:`, uploadResult);
+                                    console.log(`[RunningHub] 图片 ${i + 1} 上传成功:`, uploadResult);
                                 } catch (uploadErr) {
-                                    console.error(`[RunningHub v2] 图片 ${i + 1} 上传失败:`, uploadErr);
+                                    console.error(`[RunningHub] 图片 ${i + 1} 上传失败:`, uploadErr);
                                     throw new Error(`图片上传失败: ${uploadErr.message}`);
                                 }
                             }
@@ -6243,7 +6178,7 @@ You must design a visual composition that tells the story through **8 distinct p
                                 // 完全按照文档示例格式构建请求
                                 console.log(`[AI App] 使用的 Workflow ID: ${effectiveWorkflowId}`);
                                 console.log(`[AI App] 上传的文件:`, uploadedFiles.map(f => ({
-                                    pureFileName: f.pureFileName,
+                                    fileName: f.fileName,
                                     fullUrl: f.url
                                 })));
                                 
@@ -6261,10 +6196,10 @@ You must design a visual composition that tells the story through **8 distinct p
                                         nodeInfoList.push({
                                             nodeId: targetNode.nodeId,
                                             fieldName: targetNode.fieldName,
-                                            fieldValue: file.pureFileName,
+                                            fieldValue: file.fileName,
                                             description: targetNode.description
                                         });
-                                        console.log(`[AI App] 图片${idx + 1} → 节点 ${targetNode.nodeId} = ${file.pureFileName}`);
+                                        console.log(`[AI App] 图片${idx + 1} → 节点 ${targetNode.nodeId} = ${file.fileName}`);
                                     }
                                 });
 
@@ -6373,18 +6308,14 @@ You must design a visual composition that tells the story through **8 distinct p
                                 }
                             }
 
-                            // ★ 启动工作流（统一走快捷创作接口）
-                            const imgQuickCreateCode = node?.settings?.rhQuickCreateCode || runninghubQuickCreateCode || '';
-                            if (!imgQuickCreateCode) {
-                                throw new Error('⚡ 快捷创作 Code 未填写！请在全局设置（或节点设置）中填写 Quick Create Code');
-                            }
+                            // ★ 启动工作流（统一走 AI App Run 接口，不需要 quickCreateCode）
                             const isRHVideoWorkflow = modelId === 'runninghub-video' || type === 'video';
                             console.log(`[RunningHub] 最终 nodeInfoList:`, JSON.stringify(nodeInfoList, null, 2));
                             // 清理 workflowId
                             let cleanImgAppId = effectiveWorkflowId;
                             if (cleanImgAppId.includes('/run/workflow/')) cleanImgAppId = cleanImgAppId.split('/run/workflow/').pop();
                             else if (cleanImgAppId.includes('/run/ai-app/')) cleanImgAppId = cleanImgAppId.split('/run/ai-app/').pop();
-                            await runRunningHubWorkflow(cleanImgAppId, nodeInfoList, taskId, actualSourceNodeId, w, h, isRHVideoWorkflow, imgQuickCreateCode);
+                            await runRunningHubWorkflow(cleanImgAppId, nodeInfoList, taskId, actualSourceNodeId, w, h, isRHVideoWorkflow);
                             return; // ★ RunningHub 启动完成，等待轮询结果
                         }
 
@@ -7331,9 +7262,8 @@ You must design a visual composition that tells the story through **8 distinct p
                             const isWebAppMode = true; // runninghub-video 始终用 AI App 模式
 
                             if (isWebAppMode) {
-                                // ===== ★ 快捷创作 Quick AI App 模式（优先）或 OpenAPI v2 AI App 降级 =====
-                                // 快捷创作：POST /task/openapi/quick-ai-app/run（body 认证 + quickCreateCode）
-                                // OpenAPI v2：POST /openapi/v2/run/ai-app/{id}（Bearer 认证）
+                                // ===== ★ AI App Run 模式（统一接口） =====
+                                // 端点：POST /task/openapi/ai-app/run（body 认证，不需要 quickCreateCode）
                                 
                                 // 清理 effectiveWorkflowId（去掉可能的路径前缀）
                                 let cleanAppId = effectiveWorkflowId;
@@ -7343,10 +7273,7 @@ You must design a visual composition that tells the story through **8 distinct p
                                     cleanAppId = cleanAppId.split('/run/ai-app/').pop();
                                 }
                                 
-                                // 读取快捷创作 code（从节点设置 > 全局设置 > 空）
-                                const quickCreateCode = node?.settings?.rhQuickCreateCode || runninghubQuickCreateCode || '';
-                                const useQuickMode = !!quickCreateCode;
-                                console.log(`[RunningHub Video] 模式: ${useQuickMode ? '快捷创作 Quick AI App (code=' + quickCreateCode + ')' : 'OpenAPI v2 AI App'}, App ID: ${cleanAppId}`);
+                                console.log(`[RunningHub Video] AI App Run 模式, App ID: ${cleanAppId}`);
 
                                 // 1. 获取 AI 应用节点信息（用于发现字段定义）— 使用清理后的 ID
                                 let appNodes = [];
@@ -7358,7 +7285,7 @@ You must design a visual composition that tells the story through **8 distinct p
                                     console.warn(`[RunningHub Video] 获取节点信息失败: ${nodeErr.message}`);
                                 }
 
-                                // 2. 准备 nodeInfoList（快捷创作格式要求 nodeName + fieldType）
+                                // 2. 准备 nodeInfoList
                                 const nodeInfoList = [];
                                 const allImages = [...connectedImages];
                                 if (sourceImage && !allImages.includes(sourceImage)) allImages.push(sourceImage);
@@ -7370,17 +7297,17 @@ You must design a visual composition that tells the story through **8 distinct p
                                     // 有图片 + 有已发现的 IMAGE 节点 -> 正常上传分配
                                     for (let i = 0; i < allImages.length; i++) {
                                         try {
-                                            const uploadResult = await uploadToRunningHub(allImages[i]);
+                                            const uploadResult = await uploadToRunningHub(allImages[i], 'image');
                                             const targetNode = imageInputNodes[i % imageInputNodes.length];
                                             nodeInfoList.push({
                                                 nodeId: targetNode.nodeId,
                                                 nodeName: targetNode.nodeName || 'LoadImage',
                                                 fieldName: targetNode.fieldName,
                                                 fieldType: 'IMAGE',
-                                                fieldValue: uploadResult.pureFileName || uploadResult.fileName,
+                                                fieldValue: uploadResult.fileName,
                                                 description: targetNode.description || '上传图像'
                                             });
-                                            console.log(`[RunningHub Video] 图片${i+1} -> [${targetNode.nodeId}] ${targetNode.nodeName}.${targetNode.fieldName}: ${uploadResult.pureFileName}`);
+                                            console.log(`[RunningHub Video] 图片${i+1} -> [${targetNode.nodeId}] ${targetNode.nodeName}.${targetNode.fieldName}: ${uploadResult.fileName}`);
                                         } catch (uploadErr) {
                                             console.error(`[RunningHub Video] 图片${i+1} 上传失败:`, uploadErr);
                                         }
@@ -7392,17 +7319,17 @@ You must design a visual composition that tells the story through **8 distinct p
                                     if (imageFieldNodes.length > 0) {
                                         for (let i = 0; i < Math.min(allImages.length, imageFieldNodes.length); i++) {
                                             try {
-                                                const uploadResult = await uploadToRunningHub(allImages[i]);
+                                                const uploadResult = await uploadToRunningHub(allImages[i], 'image');
                                                 const targetNode = imageFieldNodes[i % imageFieldNodes.length];
                                                 nodeInfoList.push({
                                                     nodeId: targetNode.nodeId,
                                                     nodeName: targetNode.nodeName || 'LoadImage',
                                                     fieldName: targetNode.fieldName,
                                                     fieldType: targetNode.fieldType,
-                                                    fieldValue: uploadResult.pureFileName || uploadResult.fileName,
+                                                    fieldValue: uploadResult.fileName,
                                                     description: targetNode.description || '上传图像'
                                                 });
-                                                console.log(`[RunningHub Video] 图片${i+1}(image字段匹配) -> [${targetNode.nodeId}].${targetNode.fieldName}: ${uploadResult.pureFileName}`);
+                                                console.log(`[RunningHub Video] 图片${i+1}(image字段匹配) -> [${targetNode.nodeId}].${targetNode.fieldName}: ${uploadResult.fileName}`);
                                             } catch (e) { /* skip */ }
                                         }
                                     } else {
@@ -7508,83 +7435,9 @@ You must design a visual composition that tells the story through **8 distinct p
                                     console.log(`[RunningHub Video] Prompt -> [${pNodeId}] ${pNodeName||'?'}.prompt (${prompt.length}字)`);
                                 }
 
-                                // 3. 提交任务（快捷创作接口，quickCreateCode 必填）
-                                if (!quickCreateCode) {
-                                    throw new Error('⚡ 快捷创作 Code 未填写！请在全局设置（或节点设置）中填写 Quick Create Code');
-                                }
+                                // 3. 提交任务（AI App Run 接口，不需要 quickCreateCode）
                                 console.log(`[RunningHub] 最终 nodeInfoList (${nodeInfoList.length}项):`, JSON.stringify(nodeInfoList, null, 2));
-                                await runRunningHubWorkflow(cleanAppId, nodeInfoList, taskId, actualSourceNodeId, w, h, true, quickCreateCode);
-                                return;
-
-                            } else {
-                                // ===== ComfyUI 工作流模式（旧接口兼容）=====
-                                console.log(`[RunningHub Video] 使用 ComfyUI Workflow 模式: ${effectiveWorkflowId}`);
-                                
-                                const nodeInfoList = [];
-                                const allImages = [...connectedImages];
-                                if (sourceImage && !allImages.includes(sourceImage)) allImages.push(sourceImage);
-
-                                // 上传所有图片
-                                const uploadedFiles = [];
-                                for (let i = 0; i < allImages.length; i++) {
-                                    try {
-                                        const uploadResult = await uploadToRunningHub(allImages[i]);
-                                        uploadedFiles.push({ index: i, ...uploadResult });
-                                        console.log(`[RunningHub Video] 图片 ${i + 1} 上传成功:`, uploadResult);
-                                    } catch (uploadErr) {
-                                        throw new Error(`图片上传失败: ${uploadErr.message}`);
-                                    }
-                                }
-
-                                // 尝试自动发现节点
-                                let nodeMapping = { imageNodes: [], videoNodes: [], textNodes: [], paramNodes: [], openApiNodes: [] };
-                                try {
-                                    const workflowJson = await getRunningHubWorkflowJson(effectiveWorkflowId);
-                                    nodeMapping = discoverWorkflowNodes(workflowJson);
-                                    console.log(`[RunningHub Video] 工作流节点映射:`, nodeMapping);
-                                } catch (jsonErr) {
-                                    console.warn(`[RunningHub Video] 获取工作流定义失败: ${jsonErr.message}`);
-                                }
-
-                                const imageNodes = nodeMapping.imageNodes || [];
-                                const openApiNodes = nodeMapping.openApiNodes || [];
-
-                                // 图片处理：优先 LoadImage，其次 OpenAPI 主节点
-                                if (uploadedFiles.length > 0 && imageNodes.length > 0) {
-                                    uploadedFiles.forEach((f, idx) => {
-                                        const tn = imageNodes[idx % imageNodes.length];
-                                        nodeInfoList.push({ nodeId: tn.nodeId, fieldName: 'image', fieldValue: f.fileName });
-                                    });
-                                } else if (uploadedFiles.length > 0 && openApiNodes.length > 0) {
-                                    const oa = openApiNodes[0];
-                                    const imgFields = oa.imageFields || [];
-                                    uploadedFiles.forEach((f, idx) => {
-                                        if (idx < imgFields.length) {
-                                            nodeInfoList.push({ nodeId: oa.nodeId, fieldName: imgFields[idx], fieldValue: f.pureFileName });
-                                        }
-                                    });
-                                }
-
-                                // Prompt 处理
-                                if (prompt) {
-                                    if (openApiNodes.some(oa => oa.hasPrompt)) {
-                                        const oa = openApiNodes.find(oa => oa.hasPrompt);
-                                        nodeInfoList.push({ nodeId: oa.nodeId, fieldName: 'prompt', fieldValue: prompt });
-                                    } else if (nodeMapping.textNodes?.length > 0) {
-                                        const tn = nodeMapping.textNodes[0];
-                                        nodeInfoList.push({ nodeId: tn.nodeId, fieldName: tn.fieldName || 'text', fieldValue: prompt });
-                                    }
-                                }
-
-                                // 旧 ComfyUI 模式也统一走快捷创作
-                                const fallbackCode = node?.settings?.rhQuickCreateCode || runninghubQuickCreateCode || '';
-                                if (!fallbackCode) {
-                                    throw new Error('⚡ 快捷创作 Code 未填写！请在全局设置（或节点设置）中填写 Quick Create Code');
-                                }
-                                let cleanFallbackId = effectiveWorkflowId;
-                                if (cleanFallbackId.includes('/run/workflow/')) cleanFallbackId = cleanFallbackId.split('/run/workflow/').pop();
-                                else if (cleanFallbackId.includes('/run/ai-app/')) cleanFallbackId = cleanFallbackId.split('/run/ai-app/').pop();
-                                await runRunningHubWorkflow(cleanFallbackId, nodeInfoList, taskId, actualSourceNodeId, w, h, true, fallbackCode);
+                                await runRunningHubWorkflow(cleanAppId, nodeInfoList, taskId, actualSourceNodeId, w, h, true);
                                 return;
                             }
                         }
@@ -13739,21 +13592,6 @@ You must design a visual composition that tells the story through **8 distinct p
                                                     }`}
                                                     title="节点独立的工作流 ID（留空则使用全局设置）"
                                                 />
-                                                {/* Quick Create Code 输入框（仅 gen-video + runninghub-video 显示） */}
-                                                {node.type === 'gen-video' && (
-                                                    <input
-                                                        type="text"
-                                                        value={node.settings?.rhQuickCreateCode || ''}
-                                                        onChange={(e) => updateNodeSettings(node.id, { rhQuickCreateCode: e.target.value })}
-                                                        placeholder="⚡ 必填 Code（如 001）"
-                                                        className={`min-w-[90px] px-2 py-1 text-[10px] rounded border ${
-                                                            theme === 'dark'
-                                                                ? 'bg-blue-900/20 border-blue-500/30 text-blue-300 placeholder:text-blue-500/60'
-                                                                : 'bg-blue-50 border-blue-200 text-blue-700 placeholder:text-blue-400'
-                                                        }`}
-                                                        title="快捷创作模块 code（留空用全局设置或降级为 OpenAPI v2）"
-                                                    />
-                                                )}
                                             </div>
                                         )}
 
@@ -15696,27 +15534,6 @@ You must design a visual composition that tells the story through **8 distinct p
                                                                     }`}
                                                                     placeholder="回调地址（可选）..."
                                                                 />
-                                                            </div>
-                                                            <div className="grid grid-cols-4 items-center gap-2 mt-2">
-                                                                <label className={`text-[10px] font-medium uppercase tracking-wider text-right ${theme === 'dark' ? 'text-zinc-500' : 'text-zinc-600'}`}>
-                                                                    ⚡ 快捷Code
-                                                                </label>
-                                                                <input
-                                                                    type="text"
-                                                                    value={runninghubQuickCreateCode}
-                                                                    onChange={(e) => setRunninghubQuickCreateCode(e.target.value)}
-                                                                    className={`col-span-3 w-full rounded px-2 py-1 text-xs outline-none focus:border-green-500/50 border ${
-                                                                        theme === 'dark'
-                                                                            ? 'bg-zinc-900 border-amber-500/40 text-zinc-300'
-                                                                            : 'bg-white border-amber-300 text-zinc-900'
-                                                                    }`}
-                                                                    placeholder="⚡ 必填 — 快捷创作模块 code（如 001）"
-                                                                />
-                                                            </div>
-                                                            <div className="col-span-4 mt-1">
-                                                                <p className={`text-[9px] ${theme === 'dark' ? 'text-amber-400/70' : 'text-amber-600'}`}>
-                                                                    ⚠️ 必填！视频和图片节点统一使用快捷创作接口，不填 Code 将无法提交任务
-                                                                </p>
                                                             </div>
                                                             <div className="col-span-4 mt-2">
                                                                 <p className={`text-[9px] ${theme === 'dark' ? 'text-green-400/70' : 'text-green-500/80'}`}>
