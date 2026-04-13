@@ -7317,10 +7317,10 @@ You must design a visual composition that tells the story through **8 distinct p
 
                             console.log(`[RunningHub Video] 配置ID: ${effectiveWorkflowId}`);
 
-                            // ===== 判断是 WebApp 模式还是 Workflow 模式 =====
-                            // WebAppId 通常是 16~19 位纯数字，如 1937084629516193794
-                            // Workflow ID 格式如 2037044109663281154
-                            const isWebAppMode = /^\d{16,19}$/.test(effectiveWorkflowId);
+                            // ===== 判断模式 =====
+                            // runninghub-video 模型统一使用 OpenAPI v2 AI App 接口
+                            // 不再区分纯数字/字母ID，所有情况走 ai-app 端点
+                            const isWebAppMode = true; // runninghub-video 始终用 AI App 模式
 
                             if (isWebAppMode) {
                                 // ===== ★ OpenAPI v2 AI App 模式 =====
