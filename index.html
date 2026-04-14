@@ -6378,16 +6378,16 @@ ${apiConfigs.filter(c => c.type === 'Video').map(c => '- ' + c.id + ' (' + c.pro
                                     console.log(`[AI App] Prompt → 节点1`);
                                 }
                                 
-                                let videoDuration = String(node?.settings?.duration || '5').replace(/s$/i, '');
+                                let videoDuration = String(node?.settings?.rhDuration || node?.settings?.duration || '5').replace(/s$/i, '');
                                 if (!/^\d+$/.test(videoDuration)) videoDuration = '5';
                                 
                                 const RATIO_OPTIONS = ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16', '21:9'];
-                                let rawRatio = String(node?.settings?.ratio || 'adaptive');
+                                let rawRatio = String(node?.settings?.rhRatio || node?.settings?.ratio || 'adaptive');
                                 let videoRatio = RATIO_OPTIONS.includes(rawRatio) ? rawRatio : 'adaptive';
                                 if (videoRatio === 'Auto' || videoRatio === 'auto') videoRatio = 'adaptive';
                                 
                                 const RES_OPTIONS = ['480p', '720p', '1080p', '2k', '4k'];
-                                let videoResolution = RES_OPTIONS.includes(String(node?.settings?.resolution)) ? String(node?.settings?.resolution) : '720p';
+                                let videoResolution = RES_OPTIONS.includes(String(node?.settings?.rhResolution || node?.settings?.resolution)) ? String(node?.settings?.rhResolution || node?.settings?.resolution) : '720p';
                                 
                                 nodeInfoList.push({ nodeId: '1', fieldName: 'duration', fieldValue: videoDuration, description: '时长' });
                                 nodeInfoList.push({ nodeId: '1', fieldName: 'ratio', fieldValue: videoRatio, description: '比例' });
@@ -13839,6 +13839,8 @@ ${apiConfigs.filter(c => c.type === 'Video').map(c => '- ' + c.id + ' (' + c.pro
                                         )}
 
                                         <div className="flex gap-1 shrink-0">
+                                            {/* 通用 ratio 选择器 — RunningHub 有专属 rhRatio，隐藏通用版 */}
+                                            {!(() => { const m = apiConfigsMap.get(node.settings?.model); return m && (m.id === 'runninghub-video' || m.isRunningHub); })() && (
                                             <div className="relative">
                                                 <button
                                                     onClick={e => { e.stopPropagation(); setActiveDropdown(activeDropdown?.type === 'ratio' && activeDropdown.nodeId === node.id ? null : { nodeId: node.id, type: 'ratio' }); }}
@@ -13878,6 +13880,7 @@ ${apiConfigs.filter(c => c.type === 'Video').map(c => '- ' + c.id + ' (' + c.pro
                                                     </div>
                                                 )}
                                             </div>
+                                            )}
 
                                             {node.type === 'gen-video' && (() => {
                                                 const currentModel = apiConfigsMap.get(node.settings?.model);
@@ -13995,7 +13998,8 @@ ${apiConfigs.filter(c => c.type === 'Video').map(c => '- ' + c.id + ' (' + c.pro
                                                 (() => {
                                                     const currentModel = apiConfigsMap.get(node.settings?.model);
                                                     const isMidjourney = currentModel && (currentModel.id.includes('mj') || currentModel.provider.toLowerCase().includes('midjourney'));
-                                                    return !isMidjourney ? (
+                                                    const isRHVideo = currentModel && (currentModel.id === 'runninghub-video' || currentModel.isRunningHub);
+                                                    return (!isMidjourney && !isRHVideo) ? (
                                                 <>
                                                 <div className="relative">
                                                             <button
