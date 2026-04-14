@@ -174,6 +174,7 @@
         const Brush = (p) => <IconWrapper name="Brush" {...p} />;
         const Undo2 = (p) => <IconWrapper name="Undo2" {...p} />;
         const Eraser = (p) => <IconWrapper name="Eraser" {...p} />;
+        const AlertTriangle = (p) => <IconWrapper name="AlertTriangle" {...p} />;
 
         // --- MaskVisualFeedback 组件：蒙版视觉反馈层 ---
         const MaskVisualFeedback = ({ canvasRef }) => {
@@ -3137,13 +3138,19 @@ You must design a visual composition that tells the story through **8 distinct p
                     : allMessages;
 
                 // 构建 Canvas Agent system prompt
-                const canvasAgentPrompt = `你是 BLOOOOM Studio 的 AI 助手，既能回答问题，也能直接操控画布。
+                const canvasAgentPrompt = `你是 BLOOOOM Studio 的 Canvas Agent，你可以直接操控画布。你的回复中包含的 canvas_actions 指令块会被系统自动解析并执行。
 
-当用户要求创建节点、生成图片/视频、搭建工作流时，你需要在回复中包含一个 JSON 指令块来操控画布。
+## 核心规则（必须遵守）
+- 你 **确实可以** 操控画布，不要说"我无法操作画布"或类似的话
+- 当用户要求创建节点、生成图片/视频、搭建工作流时，**必须** 在回复中包含 canvas_actions 指令块
+- 先用 1-2 句话简要说明你要做什么，然后 **立即** 附上指令块
+- 指令块之后不要再添加任何解释或补充说明
+- **绝对不要** 在指令块后说"看来我无法操作"、"请手动操作"等自我否定的话
 
 ## 可用动作
 
 1. **create_node** — 创建节点
+   - type: "create_node"
    - nodeType: "input-image" | "gen-image" | "gen-video" | "text-node" | "preview" | "storyboard-node" | "prompt-optimizer"
    - id: 自定义临时ID（用于后续 connect 引用，如 "img1", "gen1"）
    - settings: 节点设置（可选）
@@ -3152,15 +3159,18 @@ You must design a visual composition that tells the story through **8 distinct p
      - text-node: { text }
 
 2. **connect** — 连接两个节点
+   - type: "connect"
    - from: 源节点ID
    - to: 目标节点ID
    - inputType: 输入类型（可选，默认 "default"，可选 "oref" | "sref" | "veo_start" | "veo_end"）
 
 3. **update_settings** — 更新节点设置
+   - type: "update_settings"
    - nodeId: 节点ID
    - settings: 要更新的设置对象
 
 4. **start_generation** — 触发生成
+   - type: "start_generation"
    - nodeId: 节点ID
 
 ## 可用图片模型 ID
@@ -3173,18 +3183,19 @@ ${apiConfigs.filter(c => c.type === 'Video').map(c => '- ' + c.id + ' (' + c.pro
 图片: Auto, 1:1, 16:9, 9:16, 4:3, 3:4, 21:9, 3:2, 2:3
 视频: 16:9, 9:16, 1:1
 
-## 指令格式
-在回复中用 \`\`\`canvas_actions 代码块包裹 JSON：
+## 指令格式（严格遵守）
+在回复中用 canvas_actions 代码块包裹 JSON，格式必须严格如下：
+
 \`\`\`canvas_actions
-{"actions":[...]}
+{"actions":[{"type":"create_node","nodeType":"gen-image","id":"img1","settings":{"model":"nano-banana","prompt":"...","ratio":"1:1"}}]}
 \`\`\`
 
-## 重要规则
-- 先用自然语言简要说明你要做什么，再附上指令块
+## 注意事项
 - 节点会自动布局，无需指定坐标
 - 如果用户只是聊天/提问，正常回答即可，不需要指令块
 - 批量创建时，合理使用 input-image 作为共享参考图源
-- prompt 请用英文编写，专业、详细、适合 AI 绘画模型`;
+- prompt 请用英文编写，专业、详细、适合 AI 绘画模型
+- JSON 必须是合法的 JSON 格式，不要包含注释或多余的逗号`;
 
                 let apiMessages = [
                     {
@@ -3317,22 +3328,38 @@ ${apiConfigs.filter(c => c.type === 'Video').map(c => '- ' + c.id + ' (' + c.pro
                     };
 
                     // === Canvas Agent: 解析并执行画布指令 ===
-                    const canvasActionsMatch = aiContent.match(/```canvas_actions\s*\n([\s\S]*?)```/);
+                    // 支持多种格式：```canvas_actions / ```Canvas_Actions / ```json（含 actions）
+                    let canvasActionsMatch = aiContent.match(/```canvas_actions\s*[\r\n]+([\s\S]*?)```/i);
+                    // fallback: ```json 代码块中包含 "create_node" 的也视为画布指令
+                    if (!canvasActionsMatch) {
+                        const jsonBlockMatch = aiContent.match(/```json\s*[\r\n]+([\s\S]*?)```/i);
+                        if (jsonBlockMatch && jsonBlockMatch[1].includes('create_node')) {
+                            canvasActionsMatch = jsonBlockMatch;
+                        }
+                    }
                     let executedActions = null;
+                    let canvasParseError = null;
                     if (canvasActionsMatch) {
                         try {
-                            const actionsData = JSON.parse(canvasActionsMatch[1].trim());
-                            const actions = actionsData.actions || [];
+                            // 第一种：代码块匹配，取 group 1
+                            // 第二种：裸 JSON 匹配，取 group 0
+                            const jsonStr = (canvasActionsMatch[1] || canvasActionsMatch[0]).trim();
+                            const actionsData = JSON.parse(jsonStr);
+                            const actions = actionsData.actions || (Array.isArray(actionsData) ? actionsData : []);
                             if (actions.length > 0) {
                                 executedActions = executeCanvasActions(actions);
                                 console.log('[Canvas Agent] 执行完成:', executedActions);
                             }
                         } catch (parseErr) {
-                            console.error('[Canvas Agent] 指令解析失败:', parseErr);
+                            console.error('[Canvas Agent] 指令解析失败:', parseErr, '\n原始内容:', canvasActionsMatch[1] || canvasActionsMatch[0]);
+                            canvasParseError = parseErr.message;
                         }
                     }
                     if (executedActions) {
                         newAssistantMsg.canvasActions = executedActions;
+                    }
+                    if (canvasParseError) {
+                        newAssistantMsg.canvasParseError = canvasParseError;
                     }
 
                     setChatSessions(prev => prev.map(s => {
@@ -14969,8 +14996,21 @@ ${apiConfigs.filter(c => c.type === 'Video').map(c => '- ' + c.id + ' (' + c.pro
                                                         ) : msg.content ? (
                                                             <React.Fragment>
                                                                 <div className="markdown-body" dangerouslySetInnerHTML={{ __html: marked.parse(
-                                                                    msg.content.replace(/```canvas_actions\s*\n[\s\S]*?```/g, '').trim()
+                                                                    msg.content.replace(/```(?:canvas_actions|json)\s*[\r\n]+[\s\S]*?```/gi, '').trim()
                                                                 ) }}></div>
+                                                                {msg.canvasParseError && (
+                                                                    <div className={`mt-2 rounded-lg border p-3 text-xs ${
+                                                                        theme === 'dark'
+                                                                            ? 'bg-amber-950/30 border-amber-800/50 text-amber-300'
+                                                                            : 'bg-amber-50 border-amber-200 text-amber-700'
+                                                                    }`}>
+                                                                        <div className="flex items-center gap-1.5 font-semibold mb-1">
+                                                                            <AlertTriangle size={12} />
+                                                                            <span>画布指令解析失败</span>
+                                                                        </div>
+                                                                        <div className="text-[11px] opacity-80">{msg.canvasParseError}</div>
+                                                                    </div>
+                                                                )}
                                                                 {msg.canvasActions && (
                                                                     <div className={`mt-2 rounded-lg border p-3 text-xs ${
                                                                         theme === 'dark'
