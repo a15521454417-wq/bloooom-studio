@@ -1152,7 +1152,7 @@ You must design a visual composition that tells the story through **8 distinct p
                         <div className="absolute bottom-8 left-1/2 -translate-x-1/2 bg-black/60 backdrop-blur-md px-6 py-3 rounded-full text-white text-sm font-medium border border-white/10 text-center shadow-2xl">
                             <div className="line-clamp-1 max-w-xl">{item.prompt}</div>
                             <div className="text-[10px] text-zinc-400 mt-1">
-                                {item.width}x{item.height} • {item.modelName}
+                                {item.width || 0}x{item.height || 0} • {item.modelName}
                                 {item.mjImages && item.mjImages.length > 1 && (
                                     <span className="ml-2">({(item.selectedMjImageIndex !== undefined ? item.selectedMjImageIndex : 0) + 1}/{item.mjImages.length})</span>
                                 )}
@@ -1362,8 +1362,16 @@ You must design a visual composition that tells the story through **8 distinct p
                     // 防御性处理：确保 errorMsg 始终是字符串，避免 React Error #31
                     return parsed.map(item => {
                         let safeItem = item;
+                        // 防御性处理：确保 errorMsg 始终是字符串，避免 React Error #31
                         if (item.errorMsg !== undefined && item.errorMsg !== null && typeof item.errorMsg !== 'string') {
                             safeItem = { ...item, errorMsg: JSON.stringify(item.errorMsg) };
+                        }
+                        // 防御性处理：确保 width/height 是数字（修复历史 bug 导致的数据损坏）
+                        if (safeItem.width && typeof safeItem.width !== 'number') {
+                            safeItem = { ...safeItem, width: 0 };
+                        }
+                        if (safeItem.height && typeof safeItem.height !== 'number') {
+                            safeItem = { ...safeItem, height: 0 };
                         }
                         if (safeItem.mjNeedsSplit && safeItem.mjOriginalUrl && safeItem.apiConfig?.modelId?.includes('mj')) {
                             // 标记需要重新切割，但不立即切割（避免阻塞初始化）
@@ -4765,10 +4773,9 @@ You must design a visual composition that tells the story through **8 distinct p
                         const primaryUrl = files[0]?.fileUrl || '';
                         const outputType = files[0]?.fileType || (isVideoWorkflow ? 'mp4' : 'png');
 
-                        setHistory(prev => prev.map(h => {
-                            if (h.id !== localTaskId) return h;
-                            const updated = { ...h, status: 'completed', progress: 100, url: primaryUrl, width: w, height: h };
-                            return updated;
+                        setHistory(prev => prev.map(hItem => {
+                            if (hItem.id !== localTaskId) return hItem;
+                            return { ...hItem, status: 'completed', progress: 100, url: primaryUrl, width: w, height: h };
                         }));
 
                         // 更新预览窗口
