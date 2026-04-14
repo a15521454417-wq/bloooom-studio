@@ -2947,6 +2947,148 @@ You must design a visual composition that tells the story through **8 distinct p
                 setChatFiles(prev => prev.filter((_, i) => i !== index));
             };
 
+            // === Canvas Agent: 动作执行器 ===
+            const executeCanvasActions = useCallback((actions) => {
+                const idMap = new Map(); // 临时ID → 真实节点ID
+                const results = { created: [], connected: [], generated: [], errors: [] };
+                const GRID_COLS = 3;
+                const SPACING_X = 420;
+                const SPACING_Y = 480;
+                const START_X = 200;
+                const START_Y = 200;
+
+                // 计算当前画布中心作为起始位置
+                const canvasRect = canvasRef.current?.getBoundingClientRect();
+                const centerScreen = { x: (canvasRect?.width || window.innerWidth) / 2, y: (canvasRect?.height || window.innerHeight) / 2 };
+                const centerWorld = { x: (centerScreen.x - view.x) / view.zoom, y: (centerScreen.y - view.y) / view.zoom };
+
+                let createIndex = 0;
+                const newNodes = [];
+                const newConns = [];
+
+                // Pass 1: 创建节点
+                actions.filter(a => a.type === 'create_node').forEach((action) => {
+                    const nodeType = action.nodeType;
+                    const tempId = action.id || `auto-${Date.now()}-${createIndex}`;
+                    const col = createIndex % GRID_COLS;
+                    const row = Math.floor(createIndex / GRID_COLS);
+                    const worldX = centerWorld.x + (col - 1) * SPACING_X;
+                    const worldY = centerWorld.y + (row - 1) * SPACING_Y;
+
+                    const defaultSize = nodeType === 'gen-video' ? { w: 320, h: 420 }
+                        : nodeType === 'gen-image' ? { w: 360, h: 340 }
+                        : nodeType === 'input-image' ? { w: 260, h: 260 }
+                        : nodeType === 'text-node' ? { w: 280, h: 200 }
+                        : nodeType === 'preview' ? { w: 320, h: 260 }
+                        : nodeType === 'storyboard-node' ? { w: 600, h: 500 }
+                        : nodeType === 'prompt-optimizer' ? { w: 360, h: 400 }
+                        : { w: 260, h: 260 };
+
+                    const defaultSettings = nodeType === 'gen-image'
+                        ? { model: 'nano-banana', ratio: 'Auto', resolution: 'Auto', prompt: '' }
+                        : nodeType === 'gen-video'
+                            ? { model: 'sora-2', duration: '5s', ratio: '16:9', videoPrompt: '' }
+                            : nodeType === 'text-node'
+                                ? { text: '' }
+                                : nodeType === 'storyboard-node'
+                                    ? { projectTitle: '未命名分镜', shots: [] }
+                                    : nodeType === 'prompt-optimizer'
+                                        ? { model: 'gemini-3-pro', inputPrompt: '', optimizedPrompt: '', isOptimizing: false }
+                                        : {};
+
+                    const mergedSettings = { ...defaultSettings, ...(action.settings || {}) };
+                    const realId = `node-${Date.now()}-${createIndex}`;
+                    idMap.set(tempId, realId);
+
+                    newNodes.push({
+                        id: realId,
+                        type: nodeType,
+                        x: worldX - defaultSize.w / 2,
+                        y: worldY - defaultSize.h / 2,
+                        width: defaultSize.w,
+                        height: defaultSize.h,
+                        settings: mergedSettings,
+                    });
+                    results.created.push({ tempId, realId, type: nodeType });
+                    createIndex++;
+                });
+
+                // 批量添加节点
+                if (newNodes.length > 0) {
+                    setNodes(prev => [...prev, ...newNodes]);
+                }
+
+                // Pass 2: 连接
+                actions.filter(a => a.type === 'connect').forEach((action) => {
+                    const fromId = idMap.get(action.from) || action.from;
+                    const toId = idMap.get(action.to) || action.to;
+                    const conn = {
+                        id: `conn-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+                        from: fromId,
+                        to: toId,
+                    };
+                    if (action.inputType && action.inputType !== 'default') {
+                        conn.inputType = action.inputType;
+                    }
+                    newConns.push(conn);
+                    results.connected.push({ from: fromId, to: toId });
+                });
+
+                if (newConns.length > 0) {
+                    setConnections(prev => [...prev, ...newConns]);
+                }
+
+                // Pass 3: 更新设置
+                actions.filter(a => a.type === 'update_settings').forEach((action) => {
+                    const realId = idMap.get(action.nodeId) || action.nodeId;
+                    if (action.settings) {
+                        updateNodeSettings(realId, action.settings);
+                    }
+                });
+
+                // Pass 4: 触发生成（延迟执行，等节点渲染完成）
+                const genActions = actions.filter(a => a.type === 'start_generation');
+                if (genActions.length > 0) {
+                    setTimeout(() => {
+                        genActions.forEach((action, idx) => {
+                            const realId = idMap.get(action.nodeId) || action.nodeId;
+                            // 延迟每个生成任务，避免并发冲击
+                            setTimeout(() => {
+                                // 从最新 nodes 状态中获取节点信息
+                                setNodes(currentNodes => {
+                                    const targetNode = currentNodes.find(n => n.id === realId);
+                                    if (targetNode) {
+                                        const isVideo = targetNode.type === 'gen-video';
+                                        const prompt = isVideo ? (targetNode.settings?.videoPrompt || '') : (targetNode.settings?.prompt || '');
+                                        // 获取连接的源图片
+                                        const connectedSources = connections
+                                            .filter(c => c.to === realId && (!c.inputType || c.inputType === 'default'))
+                                            .map(c => currentNodes.find(n => n.id === c.from))
+                                            .filter(n => n && n.content)
+                                            .map(n => n.content);
+                                        
+                                        const genType = isVideo ? 'video' : 'image';
+                                        startGeneration(prompt, genType, connectedSources, realId, {
+                                            model: targetNode.settings?.model,
+                                            ratio: targetNode.settings?.ratio || (isVideo ? '16:9' : 'Auto'),
+                                            resolution: targetNode.settings?.resolution || 'Auto',
+                                            duration: targetNode.settings?.duration || '5s',
+                                        });
+                                        results.generated.push(realId);
+                                    } else {
+                                        console.warn('[Canvas Agent] 未找到节点:', realId);
+                                        results.errors.push(`节点 ${realId} 未找到`);
+                                    }
+                                    return currentNodes; // 不修改
+                                });
+                            }, idx * 1500); // 每个任务间隔 1.5 秒
+                        });
+                    }, 500); // 等待节点渲染
+                }
+
+                return results;
+            }, [view, connections, setNodes, setConnections, updateNodeSettings, startGeneration, apiConfigs]);
+
             const sendChatMessage = async () => {
                 if ((!chatInput.trim() && chatFiles.length === 0) || isChatSending) return;
 
@@ -2994,10 +3136,60 @@ You must design a visual composition that tells the story through **8 distinct p
                     ? allMessages.slice(-MAX_HISTORY_MESSAGES)
                     : allMessages;
 
+                // 构建 Canvas Agent system prompt
+                const canvasAgentPrompt = `你是 BLOOOOM Studio 的 AI 助手，既能回答问题，也能直接操控画布。
+
+当用户要求创建节点、生成图片/视频、搭建工作流时，你需要在回复中包含一个 JSON 指令块来操控画布。
+
+## 可用动作
+
+1. **create_node** — 创建节点
+   - nodeType: "input-image" | "gen-image" | "gen-video" | "text-node" | "preview" | "storyboard-node" | "prompt-optimizer"
+   - id: 自定义临时ID（用于后续 connect 引用，如 "img1", "gen1"）
+   - settings: 节点设置（可选）
+     - gen-image: { model, prompt, ratio, resolution }
+     - gen-video: { model, videoPrompt, duration, ratio }
+     - text-node: { text }
+
+2. **connect** — 连接两个节点
+   - from: 源节点ID
+   - to: 目标节点ID
+   - inputType: 输入类型（可选，默认 "default"，可选 "oref" | "sref" | "veo_start" | "veo_end"）
+
+3. **update_settings** — 更新节点设置
+   - nodeId: 节点ID
+   - settings: 要更新的设置对象
+
+4. **start_generation** — 触发生成
+   - nodeId: 节点ID
+
+## 可用图片模型 ID
+${apiConfigs.filter(c => c.type === 'Image').map(c => '- ' + c.id + ' (' + c.provider + ')').join('\\n')}
+
+## 可用视频模型 ID
+${apiConfigs.filter(c => c.type === 'Video').map(c => '- ' + c.id + ' (' + c.provider + ')').join('\\n')}
+
+## 可用比例
+图片: Auto, 1:1, 16:9, 9:16, 4:3, 3:4, 21:9, 3:2, 2:3
+视频: 16:9, 9:16, 1:1
+
+## 指令格式
+在回复中用 \`\`\`canvas_actions 代码块包裹 JSON：
+\`\`\`canvas_actions
+{"actions":[...]}
+\`\`\`
+
+## 重要规则
+- 先用自然语言简要说明你要做什么，再附上指令块
+- 节点会自动布局，无需指定坐标
+- 如果用户只是聊天/提问，正常回答即可，不需要指令块
+- 批量创建时，合理使用 input-image 作为共享参考图源
+- prompt 请用英文编写，专业、详细、适合 AI 绘画模型`;
+
                 let apiMessages = [
                     {
                         role: 'system',
-                        content: '你是一名多模态AI助手，需要结合整个对话的上下文进行连续回答。'
+                        content: canvasAgentPrompt
                     },
                     ...recentMessages.map(m => ({
                         role: m.role,
@@ -3123,6 +3315,25 @@ You must design a visual composition that tells the story through **8 distinct p
                         timestamp: Date.now(),
                         modelId: chatModel // 保存回复消息时使用的模型ID
                     };
+
+                    // === Canvas Agent: 解析并执行画布指令 ===
+                    const canvasActionsMatch = aiContent.match(/```canvas_actions\s*\n([\s\S]*?)```/);
+                    let executedActions = null;
+                    if (canvasActionsMatch) {
+                        try {
+                            const actionsData = JSON.parse(canvasActionsMatch[1].trim());
+                            const actions = actionsData.actions || [];
+                            if (actions.length > 0) {
+                                executedActions = executeCanvasActions(actions);
+                                console.log('[Canvas Agent] 执行完成:', executedActions);
+                            }
+                        } catch (parseErr) {
+                            console.error('[Canvas Agent] 指令解析失败:', parseErr);
+                        }
+                    }
+                    if (executedActions) {
+                        newAssistantMsg.canvasActions = executedActions;
+                    }
 
                     setChatSessions(prev => prev.map(s => {
                         if (s.id === currentChatId) {
@@ -3783,6 +3994,80 @@ You must design a visual composition that tells the story through **8 distinct p
 
             // 优化后的复制粘贴逻辑
             useEffect(() => {
+                // 节点粘贴核心逻辑（提取公共函数，避免重复代码）
+                const pasteNodes = () => {
+                    if (!copiedNodesRef.current || !copiedNodesRef.current.nodes || copiedNodesRef.current.nodes.length === 0) return false;
+                    
+                    const copied = copiedNodesRef.current;
+                    
+                    // 计算粘贴位置：使用视图中心
+                    const canvasElement = canvasRef.current;
+                    let pasteX = 0, pasteY = 0;
+                    if (canvasElement) {
+                        const rect = canvasElement.getBoundingClientRect();
+                        const centerX = (rect.left + rect.width / 2 - view.x) / view.zoom;
+                        const centerY = (rect.top + rect.height / 2 - view.y) / view.zoom;
+                        pasteX = centerX;
+                        pasteY = centerY;
+                    }
+                    
+                    // 计算原节点的中心点
+                    const originalNodes = copied.nodes;
+                    if (originalNodes.length === 0) return false;
+                    
+                    const minX = Math.min(...originalNodes.map(n => n.x || 0));
+                    const minY = Math.min(...originalNodes.map(n => n.y || 0));
+                    const maxX = Math.max(...originalNodes.map(n => (n.x || 0) + (n.width || 0)));
+                    const maxY = Math.max(...originalNodes.map(n => (n.y || 0) + (n.height || 0)));
+                    const originalCenterX = (minX + maxX) / 2;
+                    const originalCenterY = (minY + maxY) / 2;
+                    
+                    // 计算偏移量，使新节点中心对齐到粘贴位置
+                    const offsetX = pasteX - originalCenterX;
+                    const offsetY = pasteY - originalCenterY;
+                    
+                    // 创建新节点ID映射
+                    const idMap = new Map();
+                    const baseTime = Date.now();
+                    copied.nodes.forEach((node, index) => {
+                        const newId = `node-${baseTime}-${index}-${Math.random().toString(36).substr(2, 9)}`;
+                        idMap.set(node.id, newId);
+                    });
+                    
+                    // 创建新节点
+                    const newNodes = copied.nodes.map(node => ({
+                        ...node,
+                        id: idMap.get(node.id),
+                        x: node.x + offsetX,
+                        y: node.y + offsetY
+                    }));
+                    
+                    // 创建新连接（只保留两个端点都在新节点中的连接）
+                    const newConnections = (copied.connections || [])
+                        .filter(conn => conn && idMap.has(conn.from) && idMap.has(conn.to))
+                        .map((conn, index) => ({
+                            ...conn,
+                            id: `conn-${baseTime}-${index}-${Math.random().toString(36).substr(2, 9)}`,
+                            from: idMap.get(conn.from),
+                            to: idMap.get(conn.to)
+                        }));
+                    
+                    setNodes(prev => [...prev, ...newNodes]);
+                    setConnections(prev => [...prev, ...newConnections]);
+                    
+                    // 选中粘贴的节点
+                    if (newNodes.length === 1) {
+                        setSelectedNodeId(newNodes[0].id);
+                        setSelectedNodeIds(new Set([newNodes[0].id]));
+                    } else if (newNodes.length > 1) {
+                        setSelectedNodeId(null);
+                        setSelectedNodeIds(new Set(newNodes.map(n => n.id)));
+                    }
+                    
+                    console.log(`已粘贴 ${newNodes.length} 个节点`);
+                    return true;
+                };
+                
                 // 复制功能（Ctrl+C / Cmd+C）
                 const handleCopy = async (e) => {
                     const target = e.target;
@@ -3886,73 +4171,7 @@ You must design a visual composition that tells the story through **8 distinct p
                     if (copiedNodesRef.current && copiedNodesRef.current.nodes && copiedNodesRef.current.nodes.length > 0) {
                         e.preventDefault();
                         e.stopPropagation();
-                        const copied = copiedNodesRef.current;
-                        
-                        // 计算粘贴位置：使用视图中心或鼠标位置
-                        const canvasElement = canvasRef.current;
-                        let pasteX = 0, pasteY = 0;
-                        if (canvasElement) {
-                            const rect = canvasElement.getBoundingClientRect();
-                            const centerX = (rect.left + rect.width / 2 - view.x) / view.zoom;
-                            const centerY = (rect.top + rect.height / 2 - view.y) / view.zoom;
-                            pasteX = centerX;
-                            pasteY = centerY;
-                        }
-                        
-                        // 计算原节点的中心点
-                        const originalNodes = copied.nodes;
-                        if (originalNodes.length === 0) return;
-                        
-                        const minX = Math.min(...originalNodes.map(n => n.x || 0));
-                        const minY = Math.min(...originalNodes.map(n => n.y || 0));
-                        const maxX = Math.max(...originalNodes.map(n => (n.x || 0) + (n.width || 0)));
-                        const maxY = Math.max(...originalNodes.map(n => (n.y || 0) + (n.height || 0)));
-                        const originalCenterX = (minX + maxX) / 2;
-                        const originalCenterY = (minY + maxY) / 2;
-                        
-                        // 计算偏移量，使新节点中心对齐到粘贴位置
-                        const offsetX = pasteX - originalCenterX;
-                        const offsetY = pasteY - originalCenterY;
-                        
-                        // 创建新节点ID映射
-                        const idMap = new Map();
-                        const baseTime = Date.now();
-                        copied.nodes.forEach((node, index) => {
-                            const newId = `node-${baseTime}-${index}-${Math.random().toString(36).substr(2, 9)}`;
-                            idMap.set(node.id, newId);
-                        });
-                        
-                        // 创建新节点
-                        const newNodes = copied.nodes.map(node => ({
-                            ...node,
-                            id: idMap.get(node.id),
-                            x: node.x + offsetX,
-                            y: node.y + offsetY
-                        }));
-                        
-                        // 创建新连接（只保留两个端点都在新节点中的连接）
-                        const newConnections = (copied.connections || [])
-                            .filter(conn => conn && idMap.has(conn.from) && idMap.has(conn.to))
-                            .map((conn, index) => ({
-                                ...conn,
-                                id: `conn-${baseTime}-${index}-${Math.random().toString(36).substr(2, 9)}`,
-                                from: idMap.get(conn.from),
-                                to: idMap.get(conn.to)
-                            }));
-                        
-                        setNodes(prev => [...prev, ...newNodes]);
-                        setConnections(prev => [...prev, ...newConnections]);
-                        
-                        // 选中粘贴的节点
-                        if (newNodes.length === 1) {
-                            setSelectedNodeId(newNodes[0].id);
-                            setSelectedNodeIds(new Set([newNodes[0].id]));
-                        } else if (newNodes.length > 1) {
-                            setSelectedNodeId(null);
-                            setSelectedNodeIds(new Set(newNodes.map(n => n.id)));
-                        }
-                        
-                        console.log(`已粘贴 ${newNodes.length} 个节点`);
+                        pasteNodes();
                     }
                 };
                 
@@ -3977,74 +4196,7 @@ You must design a visual composition that tells the story through **8 distinct p
                         if (copiedNodesRef.current && copiedNodesRef.current.nodes && copiedNodesRef.current.nodes.length > 0) {
                             e.preventDefault();
                             e.stopPropagation();
-                            // 直接调用粘贴逻辑
-                            const copied = copiedNodesRef.current;
-                            
-                            // 计算粘贴位置：使用视图中心
-                            const canvasElement = canvasRef.current;
-                            let pasteX = 0, pasteY = 0;
-                            if (canvasElement) {
-                                const rect = canvasElement.getBoundingClientRect();
-                                const centerX = (rect.left + rect.width / 2 - view.x) / view.zoom;
-                                const centerY = (rect.top + rect.height / 2 - view.y) / view.zoom;
-                                pasteX = centerX;
-                                pasteY = centerY;
-                            }
-                            
-                            // 计算原节点的中心点
-                            const originalNodes = copied.nodes;
-                            if (originalNodes.length === 0) return;
-                            
-                            const minX = Math.min(...originalNodes.map(n => n.x || 0));
-                            const minY = Math.min(...originalNodes.map(n => n.y || 0));
-                            const maxX = Math.max(...originalNodes.map(n => (n.x || 0) + (n.width || 0)));
-                            const maxY = Math.max(...originalNodes.map(n => (n.y || 0) + (n.height || 0)));
-                            const originalCenterX = (minX + maxX) / 2;
-                            const originalCenterY = (minY + maxY) / 2;
-                            
-                            // 计算偏移量
-                            const offsetX = pasteX - originalCenterX;
-                            const offsetY = pasteY - originalCenterY;
-                            
-                            // 创建新节点ID映射
-                            const idMap = new Map();
-                            const baseTime = Date.now();
-                            copied.nodes.forEach((node, index) => {
-                                const newId = `node-${baseTime}-${index}-${Math.random().toString(36).substr(2, 9)}`;
-                                idMap.set(node.id, newId);
-                            });
-                            
-                            // 创建新节点
-                            const newNodes = copied.nodes.map(node => ({
-                                ...node,
-                                id: idMap.get(node.id),
-                                x: node.x + offsetX,
-                                y: node.y + offsetY
-                            }));
-                            
-                        // 创建新连接（只保留两个端点都在新节点中的连接）
-                        const newConnections = (copied.connections || [])
-                            .filter(conn => conn && idMap.has(conn.from) && idMap.has(conn.to))
-                            .map((conn, index) => ({
-                                ...conn,
-                                id: `conn-${baseTime}-${index}-${Math.random().toString(36).substr(2, 9)}`,
-                                from: idMap.get(conn.from),
-                                to: idMap.get(conn.to)
-                            }));
-                        
-                        setNodes(prev => [...prev, ...newNodes]);
-                        setConnections(prev => [...prev, ...newConnections]);
-                            
-                            // 选中粘贴的节点
-                            if (newNodes.length === 1) {
-                                setSelectedNodeId(newNodes[0].id);
-                                setSelectedNodeIds(new Set([newNodes[0].id]));
-                            } else if (newNodes.length > 1) {
-                                setSelectedNodeId(null);
-                                setSelectedNodeIds(new Set(newNodes.map(n => n.id)));
-                            }
-                            
-                            console.log(`已粘贴 ${newNodes.length} 个节点`);
+                            pasteNodes();
                         }
                     }
                 };
@@ -4969,8 +5121,6 @@ You must design a visual composition that tells the story through **8 distinct p
                 });
 
                 return { imageNodes, videoNodes, textNodes, paramNodes, openApiNodes };
-
-                return { imageNodes, videoNodes, textNodes, paramNodes };
             };
 
             // 切割Midjourney返回的4张图（2x2网格）
@@ -6242,22 +6392,6 @@ You must design a visual composition that tells the story through **8 distinct p
                                 nodeInfoList.push({ nodeId: '1', fieldName: 'duration', fieldValue: videoDuration, description: '时长' });
                                 nodeInfoList.push({ nodeId: '1', fieldName: 'ratio', fieldValue: videoRatio, description: '比例' });
                                 nodeInfoList.push({ nodeId: '1', fieldName: 'resolution', fieldValue: videoResolution, description: '分辨率' });
-                                
-                                nodeInfoList.push({
-                                    nodeId: '1',
-                                    fieldName: 'duration',
-                                    fieldValue: videoDuration
-                                });
-                                nodeInfoList.push({
-                                    nodeId: '1',
-                                    fieldName: 'ratio',
-                                    fieldValue: videoRatio
-                                });
-                                nodeInfoList.push({
-                                    nodeId: '1',
-                                    fieldName: 'resolution',
-                                    fieldValue: videoResolution
-                                });
                                 console.log(`[AI App] 视频参数 → duration=${videoDuration}, ratio=${videoRatio}, resolution=${videoResolution}`);
                                 
                             } else {
@@ -11637,33 +11771,53 @@ You must design a visual composition that tells the story through **8 distinct p
                                             <div className="flex-1 flex flex-col min-h-0 mt-2">
                                                 <div className="flex justify-between items-center mb-1">
                                                     <span className="text-[11px] font-medium">任务队列</span>
-                                                    <button
-                                                        onClick={async () => {
-                                                            updateNodeSettings(node.id, { isGenerating: true });
-                                                            const tasks = [...node.settings.tasks];
-                                                            
-                                                            for (let i = 0; i < tasks.length; i++) {
-                                                                if (tasks[i].status === 'completed') continue;
-                                                                
-                                                                // 更新当前任务状态为生成中
-                                                                tasks[i].status = 'generating';
-                                                                updateNodeSettings(node.id, { tasks: [...tasks] });
-                                                                
-                                                                // 调用生成逻辑 (这里简化处理，实际应调用 startGeneration 或直接调用 API)
-                                                                try {
-                                                                    // 模拟生成过程
-                                                                    await new Promise(resolve => setTimeout(resolve, 2000));
-                                                                    tasks[i].status = 'completed';
-                                                                    tasks[i].resultUrl = 'https://via.placeholder.com/150?text=Generated'; // 占位符
-                                                                    updateNodeSettings(node.id, { tasks: [...tasks] });
-                                                                } catch (e) {
-                                                                    tasks[i].status = 'failed';
-                                                                    updateNodeSettings(node.id, { tasks: [...tasks] });
-                                                                }
-                                                            }
-                                                            
-                                                            updateNodeSettings(node.id, { isGenerating: false });
-                                                        }}
+                                    <button
+                                        onClick={async () => {
+                                            updateNodeSettings(node.id, { isGenerating: true });
+                                            const tasks = [...node.settings.tasks];
+                                            const selectedModel = node.settings?.model || 'nano-banana';
+                                            
+                                            // 获取连接到此节点的参考图
+                                            const connectedImages = [];
+                                            connections.filter(c => c.to === node.id).forEach(conn => {
+                                                const srcNode = nodes.find(n => n.id === conn.from);
+                                                if (srcNode?.imageUrl) connectedImages.push(srcNode.imageUrl);
+                                            });
+                                            const sourceImage = connectedImages.length > 0 ? connectedImages[0] : undefined;
+                                            
+                                            for (let i = 0; i < tasks.length; i++) {
+                                                if (tasks[i].status === 'completed') continue;
+                                                
+                                                tasks[i].status = 'generating';
+                                                updateNodeSettings(node.id, { tasks: [...tasks] });
+                                                
+                                                try {
+                                                    // 使用虚拟节点 ID 调用真实生成 API
+                                                    const virtualNodeId = `batch-${node.id}-task-${i}`;
+                                                    await startGeneration(
+                                                        tasks[i].prompt,
+                                                        'image',
+                                                        sourceImage ? [sourceImage] : [],
+                                                        virtualNodeId,
+                                                        { model: selectedModel, ratio: tasks[i].ratio }
+                                                    );
+                                                    tasks[i].status = 'submitted';
+                                                    updateNodeSettings(node.id, { tasks: [...tasks] });
+                                                    
+                                                    // 任务间间隔 1 秒，避免 API 限流
+                                                    if (i < tasks.length - 1) {
+                                                        await new Promise(resolve => setTimeout(resolve, 1000));
+                                                    }
+                                                } catch (e) {
+                                                    console.error(`[Batch] 任务 ${i} 失败:`, e);
+                                                    tasks[i].status = 'failed';
+                                                    tasks[i].errorMsg = e.message || '生成失败';
+                                                    updateNodeSettings(node.id, { tasks: [...tasks] });
+                                                }
+                                            }
+                                            
+                                            updateNodeSettings(node.id, { isGenerating: false });
+                                        }}
                                                         disabled={node.settings?.isGenerating}
                                                         className={`px-2 py-1 rounded text-[10px] ${node.settings?.isGenerating ? 'bg-zinc-500' : 'bg-blue-600 hover:bg-blue-500'} text-white`}
                                                         onMouseDown={(e) => e.stopPropagation()}
@@ -11681,8 +11835,9 @@ You must design a visual composition that tells the story through **8 distinct p
                                                             <div className="shrink-0">
                                                                 {task.status === 'pending' && <span className="text-zinc-500">等待中</span>}
                                                                 {task.status === 'generating' && <Loader2 size={12} className="animate-spin text-blue-500" />}
+                                                                {task.status === 'submitted' && <Loader2 size={12} className="animate-spin text-green-500" />}
                                                                 {task.status === 'completed' && <CheckCircle2 size={12} className="text-green-500" />}
-                                                                {task.status === 'failed' && <X size={12} className="text-red-500" />}
+                                                                {task.status === 'failed' && <span className="text-red-500 text-[9px]" title={task.errorMsg}>✕</span>}
                                                             </div>
                                                         </div>
                                                     ))}
@@ -14808,7 +14963,37 @@ You must design a visual composition that tells the story through **8 distinct p
                                                         {msg.isError ? (
                                                             <span className="text-red-500">{msg.content}</span>
                                                         ) : msg.content ? (
-                                                            <div className="markdown-body" dangerouslySetInnerHTML={{ __html: marked.parse(msg.content) }}></div>
+                                                            <React.Fragment>
+                                                                <div className="markdown-body" dangerouslySetInnerHTML={{ __html: marked.parse(
+                                                                    msg.content.replace(/```canvas_actions\s*\n[\s\S]*?```/g, '').trim()
+                                                                ) }}></div>
+                                                                {msg.canvasActions && (
+                                                                    <div className={`mt-2 rounded-lg border p-3 text-xs ${
+                                                                        theme === 'dark'
+                                                                            ? 'bg-emerald-950/30 border-emerald-800/50 text-emerald-300'
+                                                                            : 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                                                                    }`}>
+                                                                        <div className="flex items-center gap-1.5 font-semibold mb-1">
+                                                                            <Sparkles size={12} />
+                                                                            <span>画布操作已执行</span>
+                                                                        </div>
+                                                                        <div className="space-y-0.5 text-[11px] opacity-80">
+                                                                            {msg.canvasActions.created.length > 0 && (
+                                                                                <div>✦ 创建了 {msg.canvasActions.created.length} 个节点</div>
+                                                                            )}
+                                                                            {msg.canvasActions.connected.length > 0 && (
+                                                                                <div>✦ 建立了 {msg.canvasActions.connected.length} 条连接</div>
+                                                                            )}
+                                                                            {msg.canvasActions.generated.length > 0 && (
+                                                                                <div>✦ 已触发 {msg.canvasActions.generated.length} 个生成任务</div>
+                                                                            )}
+                                                                            {msg.canvasActions.errors.length > 0 && (
+                                                                                <div className="text-red-400">⚠ {msg.canvasActions.errors.join(', ')}</div>
+                                                                            )}
+                                                                        </div>
+                                                                    </div>
+                                                                )}
+                                                            </React.Fragment>
                                                         ) : null}
                                                         
                                                         {/* 发送到绘画按钮 */}
