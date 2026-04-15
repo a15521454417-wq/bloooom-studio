@@ -1764,6 +1764,29 @@ You must design a visual composition that tells the story through **8 distinct p
                 return map;
             }, [history]);
 
+            // 性能优化：生成缩略图，画布渲染用缩略图减少内存占用
+            const createThumbnail = (dataUrl, maxSize = 400) => {
+                return new Promise((resolve) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        let { width, height } = img;
+                        if (width > maxSize || height > maxSize) {
+                            const ratio = Math.min(maxSize / width, maxSize / height);
+                            width = Math.round(width * ratio);
+                            height = Math.round(height * ratio);
+                        }
+                        canvas.width = width;
+                        canvas.height = height;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, width, height);
+                        resolve(canvas.toDataURL('image/jpeg', 0.7));
+                    };
+                    img.onerror = () => resolve(null);
+                    img.src = dataUrl;
+                });
+            };
+
             // 性能优化：计算可见节点（视口裁剪）
             const visibleNodes = useMemo(() => {
                 if (!canvasRef.current) return nodes;
@@ -2084,12 +2107,19 @@ You must design a visual composition that tells the story through **8 distinct p
                     const rect = canvasElement.getBoundingClientRect();
                     const mouseX = e.clientX - rect.left;
                     const mouseY = e.clientY - rect.top;
-                    setView((prev) => {
-                        const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
-                        let newZoom = Math.min(Math.max(prev.zoom * zoomFactor, 0.2), 3);
-                        const scale = newZoom / prev.zoom;
-                        return { zoom: newZoom, x: mouseX - (mouseX - prev.x) * scale, y: mouseY - (mouseY - prev.y) * scale };
-                    });
+                    const deltaY = e.deltaY;
+                    // rAF 节流缩放
+                    if (!zoomRafRef.current) {
+                        zoomRafRef.current = requestAnimationFrame(() => {
+                            setView((prev) => {
+                                const zoomFactor = deltaY > 0 ? 0.9 : 1.1;
+                                let newZoom = Math.min(Math.max(prev.zoom * zoomFactor, 0.2), 3);
+                                const scale = newZoom / prev.zoom;
+                                return { zoom: newZoom, x: mouseX - (mouseX - prev.x) * scale, y: mouseY - (mouseY - prev.y) * scale };
+                            });
+                            zoomRafRef.current = null;
+                        });
+                    }
                 };
 
                 // 使用 { passive: false } 确保可以调用 preventDefault
@@ -2097,8 +2127,9 @@ You must design a visual composition that tells the story through **8 distinct p
 
                 return () => {
                     canvasElement.removeEventListener('wheel', wheelHandler);
+                    if (zoomRafRef.current) cancelAnimationFrame(zoomRafRef.current);
                 };
-            }, [view]);
+            }, []);
 
             useEffect(() => {
                 if (isResizingChat) {
@@ -2332,6 +2363,9 @@ You must design a visual composition that tells the story through **8 distinct p
             // 使用 requestAnimationFrame 节流框选逻辑
             const selectionRafRef = useRef(null);
             const pendingSelectionUpdate = useRef(null);
+            const panRafRef = useRef(null);
+            const pendingPanDelta = useRef({ x: 0, y: 0 });
+            const zoomRafRef = useRef(null);
 
             const handleMouseMove = useCallback((e) => {
                 const { clientX, clientY } = e;
@@ -2408,9 +2442,18 @@ You must design a visual composition that tells the story through **8 distinct p
                     setIsDragging(true);
                     const dx = clientX - lastMousePos.current.x;
                     const dy = clientY - lastMousePos.current.y;
-                    // 使用函数式更新，避免依赖 view
-                    setView((prev) => ({ ...prev, x: prev.x + dx, y: prev.y + dy }));
                     lastMousePos.current = { x: clientX, y: clientY };
+                    // rAF 节流：累积 delta，下一帧统一更新
+                    pendingPanDelta.current.x += dx;
+                    pendingPanDelta.current.y += dy;
+                    if (!panRafRef.current) {
+                        panRafRef.current = requestAnimationFrame(() => {
+                            const { x: accX, y: accY } = pendingPanDelta.current;
+                            setView((prev) => ({ ...prev, x: prev.x + accX, y: prev.y + accY }));
+                            pendingPanDelta.current = { x: 0, y: 0 };
+                            panRafRef.current = null;
+                        });
+                    }
                     return;
                 }
 
@@ -3986,7 +4029,8 @@ ${apiConfigs.filter(c => c.type === 'Video').map(c => '- ' + c.id + ' (' + c.pro
                         const content = ev.target.result;
                         let dimensions = { w: 0, h: 0 };
                         try { dimensions = await getImageDimensions(content); } catch (e) {}
-                        setNodes((prev) => prev.map((n) => n.id === nodeId ? { ...n, content: content, dimensions } : n));
+                        const thumbnail = await createThumbnail(content);
+                        setNodes((prev) => prev.map((n) => n.id === nodeId ? { ...n, content, thumbnail, dimensions } : n));
                     };
                     reader.readAsDataURL(file);
                 }
@@ -4175,9 +4219,10 @@ ${apiConfigs.filter(c => c.type === 'Video').map(c => '- ' + c.id + ' (' + c.pro
                                     try { 
                                         dimensions = await getImageDimensions(content);
                                     } catch (e) {}
+                                    const thumbnail = await createThumbnail(content);
                                     setNodes((prev) => prev.map((n) => 
                                         n.id === targetNode.id 
-                                            ? { ...n, content: content, dimensions } 
+                                            ? { ...n, content, thumbnail, dimensions } 
                                             : n
                                     ));
                                 };
@@ -9078,7 +9123,8 @@ ${apiConfigs.filter(c => c.type === 'Video').map(c => '- ' + c.id + ' (' + c.pro
                          const content = ev.target.result;
                          let dimensions = { w: 0, h: 0 };
                          try { dimensions = await getImageDimensions(content); } catch (e) {}
-                         setNodes((prev) => prev.map((n) => n.id === nodeId ? { ...n, content: content, dimensions } : n));
+                         const thumbnail = await createThumbnail(content);
+                         setNodes((prev) => prev.map((n) => n.id === nodeId ? { ...n, content, thumbnail, dimensions } : n));
                     };
                     reader.readAsDataURL(file);
                 }
@@ -11236,7 +11282,7 @@ ${apiConfigs.filter(c => c.type === 'Video').map(c => '- ' + c.id + ' (' + c.pro
                                                 />
                                             ) : (
                                                  <img 
-                                                    src={node.content} 
+                                                    src={node.thumbnail || node.content} 
                                                     className="w-full h-full object-contain bg-black/50" 
                                                     draggable={false}
                                                     loading="lazy"
@@ -14230,8 +14276,8 @@ ${apiConfigs.filter(c => c.type === 'Video').map(c => '- ' + c.id + ' (' + c.pro
                 );
             };
 
-            // 全局渲染性能模式：节点数 > 50 时自动启用，或用户手动开启
-            const autoPerfMode = nodes.length > 50;
+            // 全局渲染性能模式：节点数 > 10 时自动启用（图片节点内存占用大），或用户手动开启
+            const autoPerfMode = nodes.length > 10;
             const effectivePerfMode = renderPerfMode || autoPerfMode;
 
             return (
@@ -14316,7 +14362,7 @@ ${apiConfigs.filter(c => c.type === 'Video').map(c => '- ' + c.id + ' (' + c.pro
                                             ? 'bg-zinc-900 border-zinc-700 text-zinc-200 hover:bg-zinc-800'
                                             : 'bg-zinc-100 border-zinc-300 text-zinc-700 hover:bg-zinc-200'
                                 }`}
-                                title={`性能模式：${effectivePerfMode ? '已开启' : '已关闭'}${autoPerfMode ? '（节点数 > 50 自动启用）' : ''}`}
+                                title={`性能模式：${effectivePerfMode ? '已开启' : '已关闭'}${autoPerfMode ? '（节点数 > 10 自动启用）' : ''}`}
                             >
                                 <span>⚡</span>
                                 <span>性能模式</span>
